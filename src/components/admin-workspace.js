@@ -20,7 +20,7 @@ let savedText = '';
 let isTextFile = false;
 let imageUrl = '';
 let fileFilter = '';
-let githubPushInProgress = false;
+let githubRefreshInProgress = false;
 
 worker.addEventListener('message', ({ data }) => {
   const request = pending.get(data.id);
@@ -313,20 +313,24 @@ function renderMetadata() {
   setText('[data-push-command]', `git push origin ${branch || 'HEAD'}`);
   const githubTarget = repository.githubTarget;
   const pushAction = document.querySelector('[data-github-push-action]');
+  const refreshActions = document.querySelectorAll('[data-github-refresh-action], [data-stale-refresh-action]');
   const hasGitHubTarget = Boolean(githubTarget?.owner && githubTarget?.repo);
   if (pushAction instanceof HTMLButtonElement) {
     pushAction.hidden = !hasGitHubTarget;
     pushAction.disabled = !branch;
     pushAction.title = branch ? '' : 'The repository has no current branch to push.';
   }
-  setText('[data-github-owner]', hasGitHubTarget ? String(githubTarget.owner) : '—');
-  setText('[data-github-repo]', hasGitHubTarget ? String(githubTarget.repo) : '—');
-  setText('[data-github-branch]', branch || 'No current branch');
+  refreshActions.forEach((action) => {
+    action.hidden = !hasGitHubTarget;
+    action.disabled = !branch;
+    action.title = branch ? '' : 'The repository has no current branch to refresh.';
+  });
+  document.querySelectorAll('[data-github-owner]').forEach((element) => { element.textContent = hasGitHubTarget ? String(githubTarget.owner) : '—'; });
+  document.querySelectorAll('[data-github-repo]').forEach((element) => { element.textContent = hasGitHubTarget ? String(githubTarget.repo) : '—'; });
+  document.querySelectorAll('[data-github-branch]').forEach((element) => { element.textContent = branch || 'No current branch'; });
+  setText('[data-push-command]', `git push origin ${branch || 'HEAD'}`);
   const staleWarning = document.querySelector('[data-stale-warning]');
-  if (staleWarning) {
-    staleWarning.hidden = !repository.staleBase;
-    staleWarning.textContent = repository.staleBase ? 'A newer build snapshot is available. Your saved browser repository was not replaced.' : '';
-  }
+  if (staleWarning) staleWarning.hidden = !repository.staleBase;
   setText('[data-sidebar-state]', headSha && baseSha && headSha !== baseSha ? `HEAD ${headSha.slice(0, 7)}` : 'Clean at build time');
 }
 
@@ -409,7 +413,7 @@ function openDialog(name) {
 }
 
 function closeDialog(name) {
-  if (name === 'github-push' && githubPushInProgress) return;
+  if ((name === 'github-push' && githubPushInProgress) || (name === 'github-refresh' && githubRefreshInProgress)) return;
   const dialog = document.querySelector(`[data-dialog="${name}"]`);
   if (dialog instanceof HTMLDialogElement && dialog.open) dialog.close();
 }
@@ -435,6 +439,27 @@ async function prepareGitHubPush() {
   }
 }
 
+function openGitHubRefreshDialog() {
+  if (!repository?.githubTarget?.owner || !repository.githubTarget.repo || !repository.branch) return;
+  const tokenInput = document.querySelector('#github-refresh-token');
+  const status = document.querySelector('[data-github-refresh-status]');
+  if (tokenInput instanceof HTMLInputElement) tokenInput.value = '';
+  if (status) {
+    status.textContent = '';
+    status.hidden = true;
+  }
+  openDialog('github-refresh');
+  tokenInput?.focus();
+}
+
+async function prepareGitHubRefresh() {
+  try {
+    if (await mayLeaveCurrentFile()) openGitHubRefreshDialog();
+  } catch (error) {
+    showToast(`Could not prepare GitHub refresh: ${error.message}`);
+  }
+}
+
 function handleAction(action) {
   switch (action) {
     case 'save': void saveSelected().catch((error) => showToast(`Save failed: ${error.message}`)); break;
@@ -448,7 +473,7 @@ function handleAction(action) {
         openDialog('new-file');
       }
       break;
-    case 'github-push': void prepareGitHubPush(); break;
+    case 'github-refresh': void prepareGitHubRefresh(); break;
     case 'delete': void deleteSelected(); break;
     case 'upload': document.querySelector('[data-upload-input]')?.click(); break;
     case 'download-file': void downloadSelectedFile(); break;
@@ -654,6 +679,59 @@ document.querySelector('[data-github-push-form]')?.addEventListener('submit', as
   }
 });
 
+document.querySelector('[data-github-refresh-form]')?.addEventListener('submit', async (event) => {
+  event.preventDefault();
+  const form = event.currentTarget;
+  if (!(form instanceof HTMLFormElement) || githubRefreshInProgress || !form.reportValidity()) return;
+  const tokenInput = form.querySelector('input[name="token"]');
+  const status = form.querySelector('[data-github-refresh-status]');
+  const submitButton = form.querySelector('[data-github-refresh-submit]');
+  if (!(tokenInput instanceof HTMLInputElement)) return;
+  let token = tokenInput.value;
+  if (!token) return;
+  githubRefreshInProgress = true;
+  tokenInput.value = '';
+  if (submitButton instanceof HTMLButtonElement) submitButton.disabled = true;
+  if (status) {
+    status.textContent = `Refreshing ${repository?.githubTarget?.owner}/${repository?.githubTarget?.repo}…`;
+    status.hidden = false;
+  }
+  try {
+    const result = await callWorker('github-refresh', { token });
+    const importedCount = Number.isSafeInteger(result?.refreshedCount) && result.refreshedCount >= 0 ? result.refreshedCount : 0;
+    const localAhead = result?.localAhead;
+    let message;
+    if (result?.upToDate) {
+      message = 'GitHub and this local branch are already up to date; no commits imported.';
+    } else if (localAhead) {
+      const count = Number.isSafeInteger(localAhead) ? ` by ${localAhead} commit${localAhead === 1 ? '' : 's'}` : '';
+      message = `This local branch is ahead of GitHub${count}; no changes were made.`;
+    } else {
+      const previousSelection = selectedPath;
+      selectedPath = '';
+      await refreshRepository();
+      if (previousSelection && files.some(({ path }) => path === previousSelection)) await openFile(previousSelection);
+      else if (previousSelection) clearSelectedFile();
+      message = `Imported ${importedCount} commit${importedCount === 1 ? '' : 's'} from GitHub.`;
+    }
+    githubRefreshInProgress = false;
+    closeDialog('github-refresh');
+    showToast(message);
+  } catch (error) {
+    const detail = error instanceof Error ? error.message : 'Unexpected error.';
+    const safeDetail = token ? detail.split(token).join('[redacted]') : detail;
+    if (status) {
+      status.textContent = `GitHub refresh failed: ${safeDetail} Local work was not discarded. Check the token grants Contents: read access and retry only after resolving any dirty worktree or diverged history.`;
+      status.hidden = false;
+    }
+  } finally {
+    token = '';
+    tokenInput.value = '';
+    githubRefreshInProgress = false;
+    if (submitButton instanceof HTMLButtonElement) submitButton.disabled = false;
+  }
+});
+
 document.querySelector('[data-commit-form]')?.addEventListener('submit', async (event) => {
   event.preventDefault();
   const form = event.currentTarget;
@@ -727,12 +805,13 @@ document.querySelector('[data-upload-input]')?.addEventListener('change', async 
 });
 
 document.querySelectorAll('[data-dialog]').forEach((dialog) => {
-  dialog.addEventListener('click', (event) => { if (event.target === dialog && !(dialog.dataset.dialog === 'github-push' && githubPushInProgress)) dialog.close(); });
-  if (dialog.dataset.dialog === 'github-push') {
-    dialog.addEventListener('cancel', (event) => { if (githubPushInProgress) event.preventDefault(); });
+  const isBusy = () => (dialog.dataset.dialog === 'github-push' && githubPushInProgress) || (dialog.dataset.dialog === 'github-refresh' && githubRefreshInProgress);
+  dialog.addEventListener('click', (event) => { if (event.target === dialog && !isBusy()) dialog.close(); });
+  if (dialog.dataset.dialog === 'github-push' || dialog.dataset.dialog === 'github-refresh') {
+    dialog.addEventListener('cancel', (event) => { if (isBusy()) event.preventDefault(); });
     dialog.addEventListener('close', () => {
-      const tokenInput = dialog.querySelector('#github-push-token');
-      const status = dialog.querySelector('[data-github-push-status]');
+      const tokenInput = dialog.querySelector('input[name="token"]');
+      const status = dialog.querySelector('[role="alert"][aria-live="assertive"]');
       if (tokenInput instanceof HTMLInputElement) tokenInput.value = '';
       if (status) {
         status.textContent = '';

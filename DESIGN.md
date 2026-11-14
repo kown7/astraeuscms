@@ -12,7 +12,7 @@ flowchart LR
     Site --> Admin["/admin/ editor"]
     Admin -->|load .git; checkout recorded HEAD| Browser["Browser Git filesystem"]
     Browser -->|edit, stage, commit locally| Browser
-    Browser -->|explicit push with in-memory PAT| API["GitHub Git Data REST API"]
+    Browser -->|explicit REST refresh or push with in-memory PAT| API["GitHub Git Data REST API"]
     API -->|fast-forward only| Remote["GitHub branch"]
     Browser -->|download .git + working tree ZIP| Console["Local console"]
     Console -->|optional native git push| Remote
@@ -82,7 +82,7 @@ The admin route is `src/pages/admin/index.astro`, producing the reserved `/admin
 
 ## 4. Browser Git workspace
 
-The admin page is static HTML plus client-side JavaScript; no server adapter or Git proxy is needed. The browser makes requests to GitHub only after an explicit push action.
+The admin page is static HTML plus client-side JavaScript; no server adapter or Git proxy is needed. The browser contacts GitHub only after an explicit push or refresh action.
 
 - Load and unpack the embedded `.git` snapshot into browser-backed storage, then checkout the recorded branch at `HEAD` to materialize the source files.
 - Show Menus, Blog posts, and Content lists as focused views, plus a Files view covering all checked-out repository paths.
@@ -91,11 +91,12 @@ The admin page is static HTML plus client-side JavaScript; no server adapter or 
 - Create, rename, move, and delete files through explicit actions; deletion requires confirmation. Saving writes changes into the browser’s working tree.
 - Use `git.status`/status matrix to show modified, untracked, and deleted files. New content files use their collection paths, while Files can create anywhere in the repository.
 - Commit locally using `git.add` and `git.commit`. Collect commit message and author name/email in the UI; multiple commits are supported.
-- “Push to GitHub” sends the missing local commit chain through the Git Data REST API. It uses a user-supplied fine-grained PAT with repository `Contents: write`, held only in memory for the push. No branch fetch/pull or force push; the ref update is fast-forward only.
+- “Push to GitHub” sends the missing local commit chain through the Git Data REST API. It uses a user-supplied fine-grained PAT with repository `Contents: write`, held only in memory for the push. No Git smart-HTTP fetch/pull or force push; the ref update is fast-forward only.
+- “Refresh from GitHub” fetches the configured branch through Git Data REST using a fine-grained PAT with `Contents: read`. It rejects dirty worktrees and only fast-forwards when upstream descends from local `HEAD`; it preserves local commit history and refuses divergence.
 - Persist the repo and local commits in IndexedDB so a reload does not reset the branch. Show a clear export/backup reminder because browser storage can be cleared or evicted.
 - “Download repository” zips the current working tree and `.git` state, including local commit objects and refs.
 
-The initial UI uses the branch checked out at build time. It does not switch branches or fetch/pull remote changes.
+The initial UI uses the branch checked out at build time. It does not switch branches or use Git smart-HTTP fetch/pull; upstream synchronization is an explicit REST fast-forward.
 
 ## 5. Publishing: GitHub REST and console fallback
 
@@ -110,15 +111,17 @@ git push origin <current-branch>
 
 The explicit browser push uses [GitHub blob](https://docs.github.com/en/rest/git/blobs), [tree](https://docs.github.com/en/rest/git/trees), [commit](https://docs.github.com/en/rest/git/commits), and [reference](https://docs.github.com/en/rest/git/refs) endpoints. It creates missing objects in local commit order, verifies returned SHAs, then updates the branch ref with `force: false`. The fine-grained PAT needs repository `Contents: write`, is used only for that action, and is never stored.
 
+Refresh uses GitHub REST `GET` endpoints for refs, commits, trees, and blobs. It imports and verifies missing objects, then fast-forwards the browser branch only if the remote head descends from local `HEAD` and the worktree is clean. The refresh PAT needs `Contents: read`; a `Contents: write` token also works. PATs are memory-only and never exported.
+
 The export preserves repository configuration from the `.git` snapshot. The owner can instead push it from the console using their normal Git setup; browser REST push is optional and never automatic.
 
-If the GitHub branch has advanced outside the local commit history, browser REST push aborts without updating the ref. The owner resolves the divergence in the console and rebuilds the admin snapshot. Neither path force-pushes.
+If the GitHub branch has diverged from local history, refresh and push abort without updating refs. The owner resolves the divergence in the console. Neither action force-pushes.
 
 ## 6. Public snapshot decision
 
 The initial `.git` archive is a public static asset and contains the included repository history and refs, not just files rendered by the site. Browser checkout materializes only the current `HEAD` as a working tree; older repository data remains in Git. This is an accepted MVP tradeoff, and `/admin/` is not private. The user has deferred password protection and other archive filtering for later.
 
-No encryption or access-control gate is included for the static snapshot. A PAT is requested only for an explicit push, held in memory, and never written to IndexedDB or included in exports. Page JavaScript can still access a PAT while it is entered, so use a fine-grained token restricted to this repository and revoke it if exposed. A static key shipped with the site would not be private.
+No encryption or access-control gate is included for the static snapshot. A PAT is requested only for explicit GitHub push/refresh, held in memory, and never written to IndexedDB or included in exports. Page JavaScript can read it while entered, so use a fine-grained token restricted to this repository and revoke it if exposed. A static key shipped with the site would not be private.
 
 ## 7. Static path behavior
 
@@ -133,11 +136,11 @@ Use the same build command in GitHub Actions with `ASTRO_BASE=/astrocms`; upload
 1. Publish the `dist/` artifact with GitHub Pages Actions and ignore the generated `.git` snapshot archive.
 2. Define YAML menu data and Markdown collections; migrate menu rendering to read the YAML data.
 3. Add the build-time `.git`-only snapshot, clean-tree check, and browser-compatible repository validation.
-4. Add `/admin/` with browser checkout of `HEAD`, an isomorphic-git working tree, persistence, full-repository text editing and asset operations, local commits, and explicit GitHub REST push.
+4. Add `/admin/` with browser checkout of `HEAD`, an isomorphic-git working tree, persistence, full-repository text editing/assets, local commits, and explicit GitHub REST push/refresh.
 5. Add full working-repository ZIP download and verify the downloaded repo with native Git; verify root and `/astrocms/` deployments.
 
 ## 9. Deferred capabilities
 
-- Remote clone/fetch/pull and Git smart-HTTP push; branch switching, multi-user access, authentication for the static site, browser conflict resolution, and force-push.
+- Git smart-HTTP clone/fetch/pull; branch switching, multi-user access, authentication for the static site, merge/rebase conflict-resolution UI, and force-push.
 - WYSIWYG editing, rich blocks, and previewing unpublished content through a real Astro runtime.
 - Encryption, until a passphrase/key can be supplied out-of-band and the static-hosting model is reevaluated.
