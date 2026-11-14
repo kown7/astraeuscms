@@ -118,7 +118,7 @@ If the GitHub branch has advanced outside the local commit history, browser REST
 
 The initial `.git` archive is a public static asset and contains the included repository history and refs, not just files rendered by the site. Browser checkout materializes only the current `HEAD` as a working tree; older repository data remains in Git. This is an accepted MVP tradeoff, and `/admin/` is not private. The user has deferred password protection and other archive filtering for later.
 
-No encryption or access-control gate is included for the static snapshot. A PAT is requested only for an explicit push, held in memory, and never written to IndexedDB or included in exports. A static key shipped with the site would not be private.
+No encryption or access-control gate is included for the static snapshot. A PAT is requested only for an explicit push, held in memory, and never written to IndexedDB or included in exports. Page JavaScript can still access a PAT while it is entered, so use a fine-grained token restricted to this repository and revoke it if exposed. A static key shipped with the site would not be private.
 
 ## 7. Static path behavior
 

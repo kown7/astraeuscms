@@ -92,7 +92,7 @@ The `.git` snapshot is a public static asset. It includes Git history and refs; 
 - **REQ-22:** The downloaded export MUST contain both `.git` and the checked-out working tree so native Git can inspect and push it.
 - **REQ-23:** The MVP has no encryption or access-control gate for the static snapshot. The user-supplied PAT MUST NOT enter the snapshot or export.
 - **REQ-24:** A GitHub push MUST create the missing local commit chain through GitHub’s Git Data REST endpoints, then update the configured branch with `force: false`.
-- **REQ-25:** The push UI MUST request a fine-grained PAT with repository `Contents: write`, hold it in memory only for the operation, and never log or persist it.
+- **REQ-25:** The push UI MUST request a repository-scoped fine-grained PAT with `Contents: write`, hold it in memory only for the operation, and never log, export, or persist it. The UI MUST warn that page scripts can access the token while it is entered.
 - **REQ-26:** If the remote branch is not an ancestor of local `HEAD`, or GitHub’s object hashes do not match the local commits, the operation MUST stop without updating the branch ref.
 
 ## 8. Out of scope for the MVP
