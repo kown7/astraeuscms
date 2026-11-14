@@ -8,6 +8,8 @@ const FS_NAME = 'astro-cms-admin-repository';
 const REPO_DIR = '/repo';
 const WORKSPACE_DIR = '/workspace-meta';
 const READY_FILE = `${WORKSPACE_DIR}/initialized.json`;
+const RESET_STAGING_DIR = '/repo-reset-staging';
+const RESET_BACKUP_DIR = '/repo-reset-backup';
 const fs = new LightningFS();
 const pfs = fs.promises;
 let initialized;
@@ -48,18 +50,102 @@ async function mkdirp(directory) {
   }
 }
 
+function validateSnapshotMetadata(metadata, label) {
+  if (metadata?.snapshotVersion !== 1) {
+    throw new Error(`Unsupported ${label} snapshot version: ${metadata?.snapshotVersion ?? 'missing'}.`);
+  }
+  if (typeof metadata.baseSha !== 'string' || !/^[0-9a-f]{40}$/i.test(metadata.baseSha) || typeof metadata.branch !== 'string' || !metadata.branch) {
+    throw new Error(`The ${label} snapshot metadata is missing its branch or a valid base commit.`);
+  }
+  return metadata;
+}
+
+async function fetchPublishedSnapshot(baseUrl) {
+  const sidecarUrl = new URL('admin/snapshot.json', new URL(baseUrl, self.location.origin));
+  let response;
+  try { response = await fetch(sidecarUrl, { cache: 'no-store' }); } catch {
+    throw new Error('Could not reach the current published snapshot metadata. Check the connection and try again.');
+  }
+  if (!response.ok) throw new Error(`Could not load published snapshot metadata (${response.status}).`);
+  return validateSnapshotMetadata(await response.json(), 'published');
+}
+
+async function fetchPublishedArchive(baseUrl) {
+  const published = await fetchPublishedSnapshot(baseUrl);
+  const archiveUrl = new URL('admin/base-git.zip', new URL(baseUrl, self.location.origin));
+  let response;
+  try { response = await fetch(archiveUrl, { cache: 'no-store' }); } catch {
+    throw new Error('Could not download the current server repository ZIP. Check the connection and try again.');
+  }
+  if (!response.ok) throw new Error(`Could not load the server repository ZIP (${response.status}).`);
+  let archive;
+  try { archive = unzipSync(new Uint8Array(await response.arrayBuffer())); } catch {
+    throw new Error('The server repository ZIP is invalid or could not be unpacked.');
+  }
+  const metadataBytes = archive['snapshot.json'];
+  if (!metadataBytes) throw new Error('The repository ZIP is missing snapshot.json.');
+  let parsedMetadata;
+  try { parsedMetadata = JSON.parse(new TextDecoder().decode(metadataBytes)); } catch {
+    throw new Error('The repository ZIP snapshot metadata is invalid.');
+  }
+  const metadata = validateSnapshotMetadata(parsedMetadata, 'repository ZIP');
+  if (metadata.baseSha !== published.baseSha || metadata.branch !== published.branch) {
+    throw new Error('The repository ZIP does not match the current published snapshot metadata. Retry after the deployment finishes.');
+  }
+  return { published, archive, metadata };
+}
+
+async function materializeSnapshot(directory, archive, metadata) {
+  await mkdirp(directory);
+  let gitEntries = 0;
+  for (const [entryName, contents] of Object.entries(archive)) {
+    const safeName = zipPath(entryName);
+    if (!safeName || safeName.endsWith('/') || !safeName.startsWith('.git/')) continue;
+    const relative = safeName.slice('.git/'.length);
+    if (!relative) continue;
+    const path = `${directory}/.git/${relative}`;
+    await mkdirp(path.slice(0, path.lastIndexOf('/')));
+    await pfs.writeFile(path, contents);
+    gitEntries++;
+  }
+  if (!gitEntries) throw new Error('The repository archive does not contain a Git database.');
+  await git.checkout({ fs, dir: directory, ref: metadata.branch, force: true });
+  const checkedOutHead = await git.resolveRef({ fs, dir: directory, ref: 'HEAD' });
+  if (checkedOutHead !== metadata.baseSha) throw new Error('The snapshot branch does not point at its declared base commit.');
+  const matrix = await git.statusMatrix({ fs, dir: directory });
+  if (matrix.some(([, head, workdir, stage]) => head !== workdir || head !== stage)) {
+    throw new Error('The repository snapshot did not produce a clean working tree.');
+  }
+}
+
+async function pathExists(path) {
+  try { await pfs.lstat(path); return true; } catch (error) {
+    if (error.code === 'ENOENT') return false;
+    throw error;
+  }
+}
+
+async function removeTree(path) {
+  let stat;
+  try { stat = await pfs.lstat(path); } catch (error) {
+    if (error.code === 'ENOENT') return;
+    throw error;
+  }
+  if (stat.isDirectory()) {
+    for (const name of await pfs.readdir(path)) await removeTree(`${path}/${name}`);
+    await pfs.rmdir(path);
+  } else {
+    await pfs.unlink(path);
+  }
+}
+
 async function comparePublishedSnapshot(baseUrl) {
   publishedSnapshot = null;
   const sidecarUrl = new URL('admin/snapshot.json', new URL(baseUrl, self.location.origin));
   let response;
   try { response = await fetch(sidecarUrl, { cache: 'no-cache' }); } catch { return; }
   if (!response.ok) return;
-  const latest = await response.json();
-  if (latest?.snapshotVersion !== 1) {
-    throw new Error(`Unsupported repository snapshot version: ${latest?.snapshotVersion ?? 'missing'}.`);
-  }
-  if (!latest.baseSha || !latest.branch) throw new Error('The published snapshot metadata is missing its branch or base commit.');
-  publishedSnapshot = latest;
+  publishedSnapshot = validateSnapshotMetadata(await response.json(), 'published');
 }
 
 async function ensureInitialized(baseUrl) {
@@ -95,41 +181,21 @@ async function ensureInitialized(baseUrl) {
       throw new Error('Repository data exists without its initialization marker. Refusing to overwrite it; export the repository or clear this browser workspace manually.');
     }
 
-    await mkdirp(REPO_DIR);
     const archiveUrl = new URL('admin/base-git.zip', new URL(baseUrl, self.location.origin));
-    const response = await fetch(archiveUrl);
+    const response = await fetch(archiveUrl, { cache: 'no-store' });
     if (!response.ok) throw new Error(`Could not load the repository snapshot (${response.status}).`);
-    const archive = unzipSync(new Uint8Array(await response.arrayBuffer()));
+    let archive;
+    try { archive = unzipSync(new Uint8Array(await response.arrayBuffer())); } catch {
+      throw new Error('The repository snapshot ZIP is invalid or could not be unpacked.');
+    }
     const metadataBytes = archive['snapshot.json'];
     if (!metadataBytes) throw new Error('The repository archive is missing snapshot.json.');
-    const metadata = JSON.parse(new TextDecoder().decode(metadataBytes));
-    if (metadata?.snapshotVersion !== 1) {
-      throw new Error(`Unsupported repository snapshot version: ${metadata?.snapshotVersion ?? 'missing'}.`);
-    }
-    if (!metadata.branch || !metadata.baseSha) throw new Error('The repository snapshot is missing its branch or base commit.');
+    const metadata = validateSnapshotMetadata(JSON.parse(new TextDecoder().decode(metadataBytes)), 'repository archive');
     if (publishedSnapshot && (metadata.baseSha !== publishedSnapshot.baseSha || metadata.branch !== publishedSnapshot.branch)) {
       throw new Error('The repository ZIP does not match the published snapshot metadata. Reload and try again.');
     }
-
-    let gitEntries = 0;
-    for (const [entryName, contents] of Object.entries(archive)) {
-      const safeName = zipPath(entryName);
-      if (!safeName || safeName.endsWith('/') || !safeName.startsWith('.git/')) continue;
-      const relative = safeName.slice('.git/'.length);
-      if (!relative) continue;
-      const path = `${REPO_DIR}/.git/${relative}`;
-      await mkdirp(path.slice(0, path.lastIndexOf('/')));
-      await pfs.writeFile(path, contents);
-      gitEntries++;
-    }
-    if (!gitEntries) throw new Error('The repository archive does not contain a Git database.');
-
-    await git.checkout({ fs, dir: REPO_DIR, ref: metadata.branch, force: true });
+    await materializeSnapshot(REPO_DIR, archive, metadata);
     await pfs.flush();
-    const checkedOutHead = await git.resolveRef({ fs, dir: REPO_DIR, ref: 'HEAD' });
-    if (checkedOutHead !== metadata.baseSha) {
-      throw new Error('The snapshot branch does not point at its declared base commit.');
-    }
     snapshot = {
       snapshotVersion: metadata.snapshotVersion,
       baseSha: metadata.baseSha,
@@ -301,7 +367,7 @@ function githubApiError(response) {
     return new Error('GitHub API rate limit reached. Wait before retrying.');
   }
   if (response.status === 401) return new Error('GitHub rejected the token. Check that the fine-grained PAT is valid and has access to this repository.');
-  if (response.status === 403) return new Error('GitHub denied the request. Grant the fine-grained PAT Contents: read access for refresh or Contents: write access for push, and check any organization or branch policies.');
+  if (response.status === 403) return new Error('GitHub denied the request. Grant the fine-grained PAT Contents: write access and check any organization or branch policies.');
   if (response.status === 404) return new Error('GitHub could not find the repository or origin branch, or the token cannot access it. Check the origin and current branch.');
   if (response.status === 409) return new Error('GitHub detected a branch conflict. Fetch and reconcile the branch from a console before retrying.');
   if (response.status === 422) return new Error('GitHub rejected the Git object or branch update. Confirm Contents: write permission and check branch protection; use the console workflow if needed.');
@@ -316,9 +382,10 @@ async function githubRequest({ token, url, method = 'GET', body }) {
     try {
       response = await fetch(url, {
         method,
+        cache: 'no-store',
         headers: {
           Accept: 'application/vnd.github+json',
-	          ...(token ? { Authorization: `Bearer ${token}` } : {}),
+          ...(token ? { Authorization: `Bearer ${token}` } : {}),
           'X-GitHub-Api-Version': GITHUB_API_VERSION,
           ...(body === undefined ? {} : { 'Content-Type': 'application/json' }),
         },
@@ -359,12 +426,6 @@ function githubDate(person) {
   return `${date.getUTCFullYear()}-${pad(date.getUTCMonth() + 1)}-${pad(date.getUTCDate())}T${pad(date.getUTCHours())}:${pad(date.getUTCMinutes())}:${pad(date.getUTCSeconds())}${sign}${pad(Math.floor(absoluteOffset / 60))}:${pad(absoluteOffset % 60)}`;
 }
 
-async function persistWorkspaceBase(baseSha, branch) {
-  snapshot = { ...snapshot, baseSha, branch };
-  await mkdirp(WORKSPACE_DIR);
-  await pfs.writeFile(READY_FILE, JSON.stringify(snapshot), 'utf8');
-  await pfs.flush();
-}
 
 async function githubPush(payload) {
   let token = payload.token;
@@ -540,224 +601,82 @@ async function githubPush(payload) {
   }
 }
 
-async function githubRefresh(payload) {
-  let token = typeof payload.token === 'string' ? payload.token.trim() : '';
-  payload.token = '';
+
+async function resetPublishedSnapshot(payload) {
+  if (payload.confirmation !== 'RESET') throw new Error('Type RESET in the confirmation field before replacing this browser workspace.');
+  await fs.init(FS_NAME);
+
+  const previousSnapshot = snapshot;
+  const previousPublishedSnapshot = publishedSnapshot;
+  const previousInitialized = initialized;
+  let previousReady;
+  try { previousReady = await pfs.readFile(READY_FILE, 'utf8'); } catch (error) {
+    if (error.code !== 'ENOENT') throw error;
+  }
+  if (!await pathExists(REPO_DIR) && await pathExists(RESET_BACKUP_DIR)) {
+    await pfs.rename(RESET_BACKUP_DIR, REPO_DIR);
+  }
+
+  let movedOldRepository = false;
+  let installedSnapshot = false;
   try {
-    await ensureInitialized(payload.baseUrl);
-
-    const origin = await git.getConfig({ fs, dir: REPO_DIR, path: 'remote.origin.url' });
-    if (typeof origin !== 'string' || !origin) throw new Error('Configure a GitHub origin before refreshing.');
-    const target = parseGitHubOrigin(origin);
-    if (!target) throw new Error('Only https://github.com/owner/repo[.git] and git@github.com:owner/repo[.git] origins are supported.');
-
-    const matrix = await git.statusMatrix({ fs, dir: REPO_DIR });
-    if (matrix.some(([, head, workdir, stage]) => head !== workdir || head !== stage)) {
-      throw new Error('Commit or discard all working-tree and staged changes before refreshing.');
+    await removeTree(RESET_STAGING_DIR);
+    const { published, archive, metadata } = await fetchPublishedArchive(payload.baseUrl);
+    await materializeSnapshot(RESET_STAGING_DIR, archive, metadata);
+    await pfs.flush();
+    if (await pathExists(RESET_BACKUP_DIR)) await removeTree(RESET_BACKUP_DIR);
+    if (await pathExists(REPO_DIR)) {
+      await pfs.rename(REPO_DIR, RESET_BACKUP_DIR);
+      movedOldRepository = true;
     }
-    const branch = await git.currentBranch({ fs, dir: REPO_DIR, fullname: false });
-    if (!branch) throw new Error('Check out a local branch before refreshing.');
-    const localHead = await git.resolveRef({ fs, dir: REPO_DIR, ref: branch });
-    const repositoryPath = githubRepositoryPath(target);
-    const branchPath = encodedBranchPath(branch);
-    const remoteRef = await githubRequest({
-      token,
-      url: `${GITHUB_API_BASE}${repositoryPath}/git/ref/heads/${branchPath}`,
-    });
-    const remoteHead = remoteRef?.object?.sha;
-    if (!/^[0-9a-f]{40}$/i.test(remoteHead || '') || remoteRef.object.type !== 'commit') {
-      throw new Error('The configured GitHub origin branch does not point to a SHA-1 commit. Refresh from a console instead.');
-    }
-    if (remoteHead === localHead) {
-      await persistWorkspaceBase(remoteHead, branch);
-      return { owner: target.owner, repo: target.repo, branch, refreshedCount: 0, remoteHead, upToDate: true, localAhead: false };
-    }
-
-    const localCommits = new Map();
-    async function readLocalHistory(oid) {
-      if (localCommits.has(oid)) return;
-      let commit;
-      try {
-        commit = (await git.readCommit({ fs, dir: REPO_DIR, oid })).commit;
-      } catch {
-        throw new Error('The local branch history is incomplete or unreadable; refresh cannot safely determine ancestry.');
-      }
-      localCommits.set(oid, commit);
-      for (const parent of commit.parent) await readLocalHistory(parent);
-    }
-    await readLocalHistory(localHead);
-    if (localCommits.has(remoteHead)) {
-      return { owner: target.owner, repo: target.repo, branch, refreshedCount: 0, remoteHead, upToDate: false, localAhead: true };
-    }
-
-    const commitsInParentFirstOrder = [];
-    const visitedRemoteCommits = new Set();
-    let remoteContainsLocalHead = false;
-    const activeRemoteCommits = new Set();
-    async function readRemoteHistory(oid) {
-      if (activeRemoteCommits.has(oid)) throw new Error('GitHub returned cyclic commit ancestry; refresh was stopped. Use the console workflow instead.');
-      if (localCommits.has(oid)) {
-        if (oid === localHead) remoteContainsLocalHead = true;
-        return;
-      }
-      if (visitedRemoteCommits.has(oid)) return;
-      if (!/^[0-9a-f]{40}$/i.test(oid)) throw new Error('GitHub returned an unsupported commit ID; refresh was stopped. Use the console workflow instead.');
-      visitedRemoteCommits.add(oid);
-      activeRemoteCommits.add(oid);
-      const commitData = await githubRequest({
-        token,
-        url: `${GITHUB_API_BASE}${repositoryPath}/git/commits/${encodeURIComponent(oid)}`,
-      });
-      if (commitData?.sha !== oid || !/^[0-9a-f]{40}$/i.test(commitData.tree?.sha || '') || !Array.isArray(commitData.parents)) {
-        throw new Error('GitHub returned an incomplete or mismatched commit object; refresh was stopped. Use the console workflow instead.');
-      }
-      const signature = commitData.verification?.signature;
-      if (signature != null && typeof signature !== 'string') {
-        throw new Error('GitHub returned an unsupported commit signature; refresh was stopped.');
-      }
-      const parentShas = commitData.parents.map((parent) => parent?.sha);
-      if (parentShas.some((parent) => typeof parent !== 'string' || !/^[0-9a-f]{40}$/i.test(parent))) {
-        throw new Error('GitHub returned an unsupported commit parent; refresh was stopped. Use the console workflow instead.');
-      }
-      const commit = { data: commitData, parentShas };
-      for (const parent of parentShas) await readRemoteHistory(parent);
-      activeRemoteCommits.delete(oid);
-      commitsInParentFirstOrder.push({ oid, ...commit });
-    }
-    await readRemoteHistory(remoteHead);
-    if (!remoteContainsLocalHead) {
-      throw new Error('The GitHub origin branch has diverged from the browser repository. Reconcile the histories outside this workspace before refreshing.');
-    }
-
-    const importedBlobs = new Map();
-    const importedTrees = new Map();
-    const activeTrees = new Set();
-    async function importBlob(oid) {
-      if (importedBlobs.has(oid)) return importedBlobs.get(oid);
-      try {
-        await git.readBlob({ fs, dir: REPO_DIR, oid });
-        importedBlobs.set(oid, oid);
-        return oid;
-      } catch { /* The blob is not in this local object database yet. */ }
-      const blobData = await githubRequest({
-        token,
-        url: `${GITHUB_API_BASE}${repositoryPath}/git/blobs/${encodeURIComponent(oid)}`,
-      });
-      if (blobData?.sha !== oid || blobData.encoding !== 'base64' || typeof blobData.content !== 'string') {
-        throw new Error('GitHub returned an unsupported or mismatched blob object; refresh was stopped. Use the console workflow instead.');
-      }
-      const blob = Buffer.from(blobData.content, 'base64');
-      const writtenSha = await git.writeBlob({ fs, dir: REPO_DIR, blob });
-      if (writtenSha !== oid) throw new Error(`Imported blob ${oid} did not match its GitHub SHA; the branch was not updated. Use the console workflow instead.`);
-      importedBlobs.set(oid, writtenSha);
-      return writtenSha;
-    }
-    async function importTree(oid) {
-      if (importedTrees.has(oid)) return importedTrees.get(oid);
-      if (activeTrees.has(oid)) throw new Error('GitHub returned a cyclic tree; refresh was stopped.');
-      try {
-        await git.readTree({ fs, dir: REPO_DIR, oid });
-        importedTrees.set(oid, oid);
-        return oid;
-      } catch { /* The tree is not in this local object database yet. */ }
-      activeTrees.add(oid);
-      try {
-        const treeData = await githubRequest({
-          token,
-          url: `${GITHUB_API_BASE}${repositoryPath}/git/trees/${encodeURIComponent(oid)}`,
-        });
-        if (treeData?.sha !== oid || !Array.isArray(treeData.tree)) {
-          throw new Error('GitHub returned an incomplete or mismatched tree object; refresh was stopped. Use the console workflow instead.');
-        }
-        if (treeData.truncated) throw new Error('GitHub returned a truncated tree; refresh cannot safely import it. Use the console workflow instead.');
-        const entries = [];
-        for (const entry of treeData.tree) {
-          if (typeof entry.path !== 'string' || !entry.path || entry.path.includes('/') || entry.path === '.' || entry.path === '..' || !/^[0-9a-f]{40}$/i.test(entry.sha || '')) {
-            throw new Error('GitHub returned an unsupported tree entry; refresh was stopped. Use the console workflow instead.');
-          }
-          if (entry.mode === '160000' || entry.type === 'commit') {
-            throw new Error('GitHub submodules are not supported by browser refresh; use the console workflow instead.');
-          }
-          if (entry.mode === '040000' && entry.type === 'tree') {
-            await importTree(entry.sha);
-          } else if (['100644', '100755', '120000'].includes(entry.mode) && entry.type === 'blob') {
-            await importBlob(entry.sha);
-          } else {
-            throw new Error(`GitHub tree entry “${entry.path}” uses an unsupported object type or mode; refresh was stopped. Use the console workflow instead.`);
-          }
-          entries.push({ mode: entry.mode, path: entry.path, oid: entry.sha, type: entry.type });
-        }
-        const writtenSha = await git.writeTree({ fs, dir: REPO_DIR, tree: entries });
-        if (writtenSha !== oid) throw new Error(`Imported tree ${oid} did not match its GitHub SHA; the branch was not updated. Use the console workflow instead.`);
-        importedTrees.set(oid, writtenSha);
-        return writtenSha;
-      } finally {
-        activeTrees.delete(oid);
-      }
-    }
-    function gitPerson(person, label) {
-      const date = typeof person?.date === 'string' ? person.date : '';
-      const timestamp = Date.parse(date);
-      const timezone = date.match(/(Z|([+-])(\d{2}):?(\d{2}))$/i);
-      if (typeof person?.name !== 'string' || typeof person.email !== 'string' || !Number.isFinite(timestamp) || !timezone) {
-        throw new Error(`GitHub returned an unsupported ${label} identity or date; refresh was stopped. Use the console workflow instead.`);
-      }
-      const eastOffset = timezone[1].toUpperCase() === 'Z'
-        ? 0
-        : (timezone[2] === '-' ? -1 : 1) * (Number(timezone[3]) * 60 + Number(timezone[4]));
-      return {
-        name: person.name,
-        email: person.email,
-        timestamp: Math.floor(timestamp / 1000),
-        timezoneOffset: -eastOffset,
-      };
-    }
-
-    for (const { oid, data, parentShas } of commitsInParentFirstOrder) {
-      await importTree(data.tree.sha);
-      const commit = {
-        tree: data.tree.sha,
-        parent: parentShas,
-        author: gitPerson(data.author, 'author'),
-        committer: gitPerson(data.committer, 'committer'),
-        message: data.message,
-        ...(data.verification?.signature ? { gpgsig: data.verification.signature } : {}),
-      };
-      if (typeof commit.message !== 'string') throw new Error('GitHub returned a commit without a supported message; refresh was stopped. Use the console workflow instead.');
-      const writtenSha = await git.writeCommit({ fs, dir: REPO_DIR, commit });
-      if (writtenSha !== oid) {
-        throw new Error(`Imported commit ${oid} did not match its GitHub SHA; unsupported dates, messages, headers, or other commit data prevented refresh. The branch and worktree were not changed; use the console workflow instead.`);
-      }
-    }
-
-    if (!await git.isDescendent({ fs, dir: REPO_DIR, oid: remoteHead, ancestor: localHead })) {
-      throw new Error('The GitHub origin branch has diverged from the browser repository. The branch and worktree were not changed; reconcile the histories in a console, then refresh again.');
-    }
-    const ref = `refs/heads/${branch}`;
-    await git.writeRef({ fs, dir: REPO_DIR, ref, value: remoteHead, force: true });
-    try {
-      await git.checkout({ fs, dir: REPO_DIR, ref: branch });
-    } catch (error) {
-      await git.writeRef({ fs, dir: REPO_DIR, ref, value: localHead, force: true });
-      await git.checkout({ fs, dir: REPO_DIR, ref: branch });
-      throw error;
-    }
-    if (await git.resolveRef({ fs, dir: REPO_DIR, ref: 'HEAD' }) !== remoteHead) {
-      throw new Error('The branch did not check out at the verified GitHub commit; use the console workflow instead.');
-    }
-    await persistWorkspaceBase(remoteHead, branch);
-    return {
-      owner: target.owner,
-      repo: target.repo,
-      branch,
-      refreshedCount: commitsInParentFirstOrder.length,
-      remoteHead,
-      upToDate: false,
-      localAhead: false,
+    await pfs.rename(RESET_STAGING_DIR, REPO_DIR);
+    installedSnapshot = true;
+    const nextSnapshot = {
+      snapshotVersion: metadata.snapshotVersion,
+      baseSha: metadata.baseSha,
+      branch: metadata.branch,
+      builtAt: metadata.builtAt,
     };
+    await mkdirp(WORKSPACE_DIR);
+    await pfs.writeFile(READY_FILE, JSON.stringify(nextSnapshot), 'utf8');
+    await pfs.flush();
+    snapshot = nextSnapshot;
+    publishedSnapshot = published;
+    initialized = Promise.resolve();
+
+    let cleanupWarning = false;
+    if (movedOldRepository) {
+      try {
+        await removeTree(RESET_BACKUP_DIR);
+        await pfs.flush();
+      } catch {
+        cleanupWarning = true;
+      }
+    }
+    return { branch: metadata.branch, baseSha: metadata.baseSha, cleanupWarning };
+  } catch (error) {
+    try {
+      if (installedSnapshot) await removeTree(REPO_DIR);
+      if (movedOldRepository && await pathExists(RESET_BACKUP_DIR)) await pfs.rename(RESET_BACKUP_DIR, REPO_DIR);
+      if (previousReady === undefined) {
+        if (await pathExists(READY_FILE)) await pfs.unlink(READY_FILE);
+      } else {
+        await mkdirp(WORKSPACE_DIR);
+        await pfs.writeFile(READY_FILE, previousReady, 'utf8');
+      }
+      await pfs.flush();
+      snapshot = previousSnapshot;
+      publishedSnapshot = previousPublishedSnapshot;
+      initialized = previousInitialized;
+    } catch (rollbackError) {
+      throw new Error(`${error instanceof Error ? error.message : String(error)} The previous workspace could not be fully restored: ${rollbackError instanceof Error ? rollbackError.message : String(rollbackError)}`);
+    }
+    throw error;
   } finally {
-    token = '';
-    payload.token = '';
+    try {
+      await removeTree(RESET_STAGING_DIR);
+      await pfs.flush();
+    } catch { /* A later reset retries cleanup of this private staging path. */ }
   }
 }
 
@@ -787,7 +706,7 @@ async function exportRepository() {
 }
 
 async function handle(type, payload) {
-  if (type !== 'init' && type !== 'github-refresh') await ensureInitialized(payload.baseUrl);
+  if (type !== 'init' && type !== 'reset-published') await ensureInitialized(payload.baseUrl);
   switch (type) {
     case 'init':
       await ensureInitialized(payload.baseUrl);
@@ -802,7 +721,7 @@ async function handle(type, payload) {
     case 'metadata': return metadata();
     case 'commit': return commit(payload);
     case 'github-push': return githubPush(payload);
-    case 'github-refresh': return githubRefresh(payload);
+    case 'reset-published': return resetPublishedSnapshot(payload);
     case 'export': return exportRepository();
     default: throw new Error(`Unknown repository operation: ${type}`);
   }

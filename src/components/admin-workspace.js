@@ -20,7 +20,8 @@ let savedText = '';
 let isTextFile = false;
 let imageUrl = '';
 let fileFilter = '';
-let githubRefreshInProgress = false;
+let githubPushInProgress = false;
+let resetInProgress = false;
 
 worker.addEventListener('message', ({ data }) => {
   const request = pending.get(data.id);
@@ -313,18 +314,12 @@ function renderMetadata() {
   setText('[data-push-command]', `git push origin ${branch || 'HEAD'}`);
   const githubTarget = repository.githubTarget;
   const pushAction = document.querySelector('[data-github-push-action]');
-  const refreshActions = document.querySelectorAll('[data-github-refresh-action], [data-stale-refresh-action]');
   const hasGitHubTarget = Boolean(githubTarget?.owner && githubTarget?.repo);
   if (pushAction instanceof HTMLButtonElement) {
     pushAction.hidden = !hasGitHubTarget;
     pushAction.disabled = !branch;
     pushAction.title = branch ? '' : 'The repository has no current branch to push.';
   }
-  refreshActions.forEach((action) => {
-    action.hidden = !hasGitHubTarget;
-    action.disabled = !branch;
-    action.title = branch ? '' : 'The repository has no current branch to refresh.';
-  });
   document.querySelectorAll('[data-github-owner]').forEach((element) => { element.textContent = hasGitHubTarget ? String(githubTarget.owner) : '—'; });
   document.querySelectorAll('[data-github-repo]').forEach((element) => { element.textContent = hasGitHubTarget ? String(githubTarget.repo) : '—'; });
   document.querySelectorAll('[data-github-branch]').forEach((element) => { element.textContent = branch || 'No current branch'; });
@@ -413,7 +408,7 @@ function openDialog(name) {
 }
 
 function closeDialog(name) {
-  if ((name === 'github-push' && githubPushInProgress) || (name === 'github-refresh' && githubRefreshInProgress)) return;
+  if ((name === 'github-push' && githubPushInProgress) || (name === 'published-reset' && resetInProgress)) return;
   const dialog = document.querySelector(`[data-dialog="${name}"]`);
   if (dialog instanceof HTMLDialogElement && dialog.open) dialog.close();
 }
@@ -439,25 +434,18 @@ async function prepareGitHubPush() {
   }
 }
 
-function openGitHubRefreshDialog() {
-  if (!repository?.githubTarget?.owner || !repository.githubTarget.repo || !repository.branch) return;
-  const tokenInput = document.querySelector('#github-refresh-token');
-  const status = document.querySelector('[data-github-refresh-status]');
-  if (tokenInput instanceof HTMLInputElement) tokenInput.value = '';
+function openPublishedResetDialog() {
+  const confirmationInput = document.querySelector('#published-reset-confirmation');
+  const status = document.querySelector('[data-published-reset-status]');
+  if (confirmationInput instanceof HTMLInputElement) confirmationInput.value = '';
   if (status) {
     status.textContent = '';
     status.hidden = true;
   }
-  openDialog('github-refresh');
-  tokenInput?.focus();
-}
-
-async function prepareGitHubRefresh() {
-  try {
-    if (await mayLeaveCurrentFile()) openGitHubRefreshDialog();
-  } catch (error) {
-    showToast(`Could not prepare GitHub refresh: ${error.message}`);
-  }
+  setText('[data-reset-branch]', repository?.branch || '—');
+  setText('[data-reset-head]', repository?.headSha?.slice(0, 12) || '—');
+  openDialog('published-reset');
+  confirmationInput?.focus();
 }
 
 function handleAction(action) {
@@ -473,7 +461,8 @@ function handleAction(action) {
         openDialog('new-file');
       }
       break;
-    case 'github-refresh': void prepareGitHubRefresh(); break;
+    case 'github-push': void prepareGitHubPush(); break;
+    case 'reset-published': openPublishedResetDialog(); break;
     case 'delete': void deleteSelected(); break;
     case 'upload': document.querySelector('[data-upload-input]')?.click(); break;
     case 'download-file': void downloadSelectedFile(); break;
@@ -679,55 +668,46 @@ document.querySelector('[data-github-push-form]')?.addEventListener('submit', as
   }
 });
 
-document.querySelector('[data-github-refresh-form]')?.addEventListener('submit', async (event) => {
+document.querySelector('[data-published-reset-form]')?.addEventListener('submit', async (event) => {
   event.preventDefault();
   const form = event.currentTarget;
-  if (!(form instanceof HTMLFormElement) || githubRefreshInProgress || !form.reportValidity()) return;
-  const tokenInput = form.querySelector('input[name="token"]');
-  const status = form.querySelector('[data-github-refresh-status]');
-  const submitButton = form.querySelector('[data-github-refresh-submit]');
-  if (!(tokenInput instanceof HTMLInputElement)) return;
-  let token = tokenInput.value;
-  token = token.trim();
-  githubRefreshInProgress = true;
-  tokenInput.value = '';
+  if (!(form instanceof HTMLFormElement) || resetInProgress || !form.reportValidity()) return;
+  const confirmationInput = form.querySelector('input[name="confirmation"]');
+  const status = form.querySelector('[data-published-reset-status]');
+  const submitButton = form.querySelector('[data-published-reset-submit]');
+  if (!(confirmationInput instanceof HTMLInputElement)) return;
+  const confirmation = confirmationInput.value.trim();
+  resetInProgress = true;
   if (submitButton instanceof HTMLButtonElement) submitButton.disabled = true;
   if (status) {
-    status.textContent = `Refreshing ${repository?.githubTarget?.owner}/${repository?.githubTarget?.repo}…`;
+    status.textContent = 'Fetching and validating the current server snapshot…';
     status.hidden = false;
   }
+  let resetComplete = false;
   try {
-    const result = await callWorker('github-refresh', { token });
-    const importedCount = Number.isSafeInteger(result?.refreshedCount) && result.refreshedCount >= 0 ? result.refreshedCount : 0;
-    const localAhead = result?.localAhead;
-    let message;
-    if (result?.upToDate) {
-      message = 'GitHub and this local branch are already up to date; no commits imported.';
-    } else if (localAhead) {
-      const count = Number.isSafeInteger(localAhead) ? ` by ${localAhead} commit${localAhead === 1 ? '' : 's'}` : '';
-      message = `This local branch is ahead of GitHub${count}; no changes were made.`;
-    } else {
-      const previousSelection = selectedPath;
-      selectedPath = '';
-      await refreshRepository();
-      if (previousSelection && files.some(({ path }) => path === previousSelection)) await openFile(previousSelection);
-      else if (previousSelection) clearSelectedFile();
-      message = `Imported ${importedCount} commit${importedCount === 1 ? '' : 's'} from GitHub.`;
-    }
-    githubRefreshInProgress = false;
-    closeDialog('github-refresh');
+    const result = await callWorker('reset-published', { confirmation });
+    resetComplete = true;
+    selectedPath = '';
+    clearSelectedFile();
+    await refreshRepository();
+    showScreen('overview', 'overview');
+    const message = result.cleanupWarning
+      ? 'Published snapshot restored, but old browser data cleanup was incomplete. Retry the reset to finish cleanup.'
+      : `Browser workspace reset to published snapshot ${result.baseSha.slice(0, 10)}.`;
+    resetInProgress = false;
+    closeDialog('published-reset');
+    form.reset();
     showToast(message);
   } catch (error) {
     const detail = error instanceof Error ? error.message : 'Unexpected error.';
-    const safeDetail = token ? detail.split(token).join('[redacted]') : detail;
     if (status) {
-      status.textContent = `GitHub refresh failed: ${safeDetail} Local work was not discarded. Check the token grants Contents: read access and retry only after resolving any dirty worktree or diverged history.`;
+      status.textContent = resetComplete
+        ? `The reset completed, but the interface could not reload the repository: ${detail} Reload the page.`
+        : `Reset failed: ${detail}`;
       status.hidden = false;
     }
   } finally {
-    token = '';
-    tokenInput.value = '';
-    githubRefreshInProgress = false;
+    resetInProgress = false;
     if (submitButton instanceof HTMLButtonElement) submitButton.disabled = false;
   }
 });
@@ -805,14 +785,16 @@ document.querySelector('[data-upload-input]')?.addEventListener('change', async 
 });
 
 document.querySelectorAll('[data-dialog]').forEach((dialog) => {
-  const isBusy = () => (dialog.dataset.dialog === 'github-push' && githubPushInProgress) || (dialog.dataset.dialog === 'github-refresh' && githubRefreshInProgress);
+  const isBusy = () => (dialog.dataset.dialog === 'github-push' && githubPushInProgress) || (dialog.dataset.dialog === 'published-reset' && resetInProgress);
   dialog.addEventListener('click', (event) => { if (event.target === dialog && !isBusy()) dialog.close(); });
-  if (dialog.dataset.dialog === 'github-push' || dialog.dataset.dialog === 'github-refresh') {
+  if (dialog.dataset.dialog === 'github-push' || dialog.dataset.dialog === 'published-reset') {
     dialog.addEventListener('cancel', (event) => { if (isBusy()) event.preventDefault(); });
     dialog.addEventListener('close', () => {
       const tokenInput = dialog.querySelector('input[name="token"]');
+      const confirmationInput = dialog.querySelector('input[name="confirmation"]');
       const status = dialog.querySelector('[role="alert"][aria-live="assertive"]');
       if (tokenInput instanceof HTMLInputElement) tokenInput.value = '';
+      if (confirmationInput instanceof HTMLInputElement) confirmationInput.value = '';
       if (status) {
         status.textContent = '';
         status.hidden = true;
