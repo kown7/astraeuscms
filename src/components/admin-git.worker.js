@@ -173,7 +173,18 @@ async function status() {
 async function metadata() {
   const branch = await git.currentBranch({ fs, dir: REPO_DIR, fullname: false });
   const headSha = await git.resolveRef({ fs, dir: REPO_DIR, ref: 'HEAD' });
-  const isStale = publishedSnapshot && (snapshot.baseSha !== publishedSnapshot.baseSha || snapshot.branch !== publishedSnapshot.branch);
+  let isStale = false;
+  if (publishedSnapshot) {
+    if (branch !== publishedSnapshot.branch) {
+      isStale = true;
+    } else if (snapshot.baseSha !== publishedSnapshot.baseSha) {
+      try {
+        isStale = !(await git.isDescendent({ fs, dir: REPO_DIR, oid: headSha, ancestor: publishedSnapshot.baseSha }));
+      } catch {
+        isStale = true;
+      }
+    }
+  }
   const origin = await git.getConfig({ fs, dir: REPO_DIR, path: 'remote.origin.url' });
   return {
     ...snapshot,
@@ -576,7 +587,6 @@ async function githubRefresh(payload) {
     }
     await readLocalHistory(localHead);
     if (localCommits.has(remoteHead)) {
-      await persistWorkspaceBase(remoteHead, branch);
       return { owner: target.owner, repo: target.repo, branch, refreshedCount: 0, remoteHead, upToDate: false, localAhead: true };
     }
 
