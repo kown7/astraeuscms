@@ -22,7 +22,7 @@ The project began as an Astro 7 starter with one homepage and no CMS routes or c
 - **One branch in the MVP.** Use the branch checked out at build time. No branch switching or Git transport fetch/pull.
 - **The `/admin/` namespace is reserved** for editing. Site content must not claim that route.
 - **Full repository editing.** The Files view covers repository text and binary files; content-specific views are shortcuts, not restrictions. Text remains directly editable; common images are previewable and replaceable. No WYSIWYG editor in the MVP.
-- **PAT handling.** Request a fine-grained token per push/refresh, use it only in memory, and never persist it in IndexedDB or the export.
+- **PAT handling.** Request a fine-grained token per push and for private-repository refresh, use it only in memory, and never persist it in IndexedDB or the export.
 
 ## 4. Users and primary workflow
 
@@ -32,7 +32,7 @@ Single site owner; one browser editing session at a time. No accounts, teams, ro
 2. The build emits the static website to `dist/` and an archive containing `.git` only.
 3. The owner opens `/admin/`; the browser loads `.git` into persistent browser storage and checks out the recorded branch at `HEAD`, recreating the tracked working tree.
 4. The owner edits repository files and creates zero or more local Git commits in the browser.
-5. To reload upstream changes, the owner explicitly enters a GitHub PAT with `Contents: read`; the browser fast-forwards only when the remote head descends from local `HEAD` and the worktree is clean.
+5. To reload upstream changes, the owner explicitly refreshes from GitHub. Public repositories need no token; private repositories use a PAT with `Contents: read`. Refresh fast-forwards only when the remote head descends from local `HEAD` and the worktree is clean.
 6. To publish directly, the owner explicitly enters a GitHub PAT with `Contents: write` and pushes local commits through the GitHub REST API.
 7. Alternatively, the owner downloads the complete working repository, verifies `git status` and `git log`, and pushes from the console.
 
@@ -94,9 +94,9 @@ The `.git` snapshot is a public static asset. It includes Git history and refs; 
 - **REQ-22:** The downloaded export MUST contain both `.git` and the checked-out working tree so native Git can inspect and push it.
 - **REQ-23:** The MVP has no encryption or access-control gate for the static snapshot. User-supplied PATs MUST NOT enter the snapshot or export.
 - **REQ-24:** A GitHub push MUST create the missing local commit chain through GitHub’s Git Data REST endpoints, then update the configured branch with `force: false`.
-- **REQ-25:** The push UI MUST request a repository-scoped fine-grained PAT with `Contents: write`, hold it in memory only for the operation, and never log, export, or persist it. The UI MUST warn that page scripts can access the token while it is entered.
+- **REQ-25:** The push UI MUST request a repository-scoped fine-grained PAT with `Contents: write`; private-repository refresh MUST request `Contents: read`. Tokens MUST be held only in memory for the operation and never logged, exported, or persisted. The UI MUST warn that page scripts can access a token while it is entered.
 - **REQ-26:** If the remote branch is not an ancestor of local `HEAD`, or GitHub’s object hashes do not match the local commits, the operation MUST stop without updating the branch ref.
-- **REQ-27:** Refresh MUST request a fine-grained PAT with `Contents: read`, reject dirty worktrees, and import upstream commits only when the remote branch is a fast-forward descendant of local `HEAD`. Divergence MUST be surfaced without changing the branch or working tree.
+- **REQ-27:** Refresh MAY omit a PAT for public repositories; private repositories require a fine-grained PAT with `Contents: read`. It MUST reject dirty worktrees and import upstream commits only when the remote branch is a fast-forward descendant of local `HEAD`. Divergence MUST be surfaced without changing the branch or working tree.
 
 ## 8. Out of scope for the MVP
 

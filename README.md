@@ -17,4 +17,4 @@ Open `http://localhost:4321/admin/`.
 
 `npm run build` writes the static site to the Git-ignored `dist/` folder. GitHub Actions builds with `ASTRO_BASE=/astrocms` and deploys `dist/` to Pages on pushes to `main`; set the repository’s Pages source to **GitHub Actions**. The build requires a normal, non-bare Git working copy with full history and a named branch.
 
-After editing, use **Push to GitHub** with a fine-grained PAT that has repository `Contents: write`, or **Refresh from GitHub** with `Contents: read` to fast-forward a clean browser worktree. Alternatively, download the repository ZIP and use `git status`, `git log`, and `git push origin <branch>` from your console.
+After editing, use **Push to GitHub** with a fine-grained PAT that has repository `Contents: write`, or **Refresh from GitHub** (no token for public repos; private repos need `Contents: read`) to fast-forward a clean browser worktree. Alternatively, download the repository ZIP and use `git status`, `git log`, and `git push origin <branch>` from your console.

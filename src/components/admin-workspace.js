@@ -688,7 +688,7 @@ document.querySelector('[data-github-refresh-form]')?.addEventListener('submit',
   const submitButton = form.querySelector('[data-github-refresh-submit]');
   if (!(tokenInput instanceof HTMLInputElement)) return;
   let token = tokenInput.value;
-  if (!token) return;
+  token = token.trim();
   githubRefreshInProgress = true;
   tokenInput.value = '';
   if (submitButton instanceof HTMLButtonElement) submitButton.disabled = true;

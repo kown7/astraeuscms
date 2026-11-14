@@ -307,7 +307,7 @@ async function githubRequest({ token, url, method = 'GET', body }) {
         method,
         headers: {
           Accept: 'application/vnd.github+json',
-          Authorization: `Bearer ${token}`,
+	          ...(token ? { Authorization: `Bearer ${token}` } : {}),
           'X-GitHub-Api-Version': GITHUB_API_VERSION,
           ...(body === undefined ? {} : { 'Content-Type': 'application/json' }),
         },
@@ -530,12 +530,10 @@ async function githubPush(payload) {
 }
 
 async function githubRefresh(payload) {
-  let token = payload.token;
+  let token = typeof payload.token === 'string' ? payload.token.trim() : '';
   payload.token = '';
   try {
     await ensureInitialized(payload.baseUrl);
-    if (typeof token !== 'string' || !token.trim()) throw new Error('Enter a fine-grained GitHub PAT with Contents: read access to this repository.');
-    token = token.trim();
 
     const origin = await git.getConfig({ fs, dir: REPO_DIR, path: 'remote.origin.url' });
     if (typeof origin !== 'string' || !origin) throw new Error('Configure a GitHub origin before refreshing.');
