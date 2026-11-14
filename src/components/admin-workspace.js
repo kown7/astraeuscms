@@ -20,6 +20,7 @@ let savedText = '';
 let isTextFile = false;
 let imageUrl = '';
 let fileFilter = '';
+let githubPushInProgress = false;
 
 worker.addEventListener('message', ({ data }) => {
   const request = pending.get(data.id);
@@ -310,6 +311,17 @@ function renderMetadata() {
   setText('[data-export-branch]', branch || 'Detached HEAD');
   setText('[data-export-base]', shortBase);
   setText('[data-push-command]', `git push origin ${branch || 'HEAD'}`);
+  const githubTarget = repository.githubTarget;
+  const pushAction = document.querySelector('[data-github-push-action]');
+  const hasGitHubTarget = Boolean(githubTarget?.owner && githubTarget?.repo);
+  if (pushAction instanceof HTMLButtonElement) {
+    pushAction.hidden = !hasGitHubTarget;
+    pushAction.disabled = !branch;
+    pushAction.title = branch ? '' : 'The repository has no current branch to push.';
+  }
+  setText('[data-github-owner]', hasGitHubTarget ? String(githubTarget.owner) : '—');
+  setText('[data-github-repo]', hasGitHubTarget ? String(githubTarget.repo) : '—');
+  setText('[data-github-branch]', branch || 'No current branch');
   const staleWarning = document.querySelector('[data-stale-warning]');
   if (staleWarning) {
     staleWarning.hidden = !repository.staleBase;
@@ -397,8 +409,30 @@ function openDialog(name) {
 }
 
 function closeDialog(name) {
+  if (name === 'github-push' && githubPushInProgress) return;
   const dialog = document.querySelector(`[data-dialog="${name}"]`);
   if (dialog instanceof HTMLDialogElement && dialog.open) dialog.close();
+}
+
+function openGitHubPushDialog() {
+  if (!repository?.githubTarget?.owner || !repository.githubTarget.repo || !repository.branch) return;
+  const tokenInput = document.querySelector('#github-push-token');
+  const status = document.querySelector('[data-github-push-status]');
+  if (tokenInput instanceof HTMLInputElement) tokenInput.value = '';
+  if (status) {
+    status.textContent = '';
+    status.hidden = true;
+  }
+  openDialog('github-push');
+  tokenInput?.focus();
+}
+
+async function prepareGitHubPush() {
+  try {
+    if (await mayLeaveCurrentFile()) openGitHubPushDialog();
+  } catch (error) {
+    showToast(`Could not prepare GitHub push: ${error.message}`);
+  }
 }
 
 function handleAction(action) {
@@ -414,7 +448,7 @@ function handleAction(action) {
         openDialog('new-file');
       }
       break;
-    case 'rename': void renameSelected(); break;
+    case 'github-push': void prepareGitHubPush(); break;
     case 'delete': void deleteSelected(); break;
     case 'upload': document.querySelector('[data-upload-input]')?.click(); break;
     case 'download-file': void downloadSelectedFile(); break;
@@ -578,6 +612,48 @@ editor?.addEventListener('scroll', () => {
   if (editor && lineGutter) lineGutter.scrollTop = editor.scrollTop;
 });
 
+document.querySelector('[data-github-push-form]')?.addEventListener('submit', async (event) => {
+  event.preventDefault();
+  const form = event.currentTarget;
+  if (!(form instanceof HTMLFormElement) || githubPushInProgress || !form.reportValidity()) return;
+  const tokenInput = form.querySelector('input[name="token"]');
+  const status = form.querySelector('[data-github-push-status]');
+  const submitButton = form.querySelector('[data-github-push-submit]');
+  if (!(tokenInput instanceof HTMLInputElement)) return;
+  let token = tokenInput.value;
+  if (!token) return;
+  tokenInput.value = '';
+  githubPushInProgress = true;
+  if (submitButton instanceof HTMLButtonElement) submitButton.disabled = true;
+  if (status) {
+    status.textContent = `Pushing to ${repository?.githubTarget?.owner}/${repository?.githubTarget?.repo}…`;
+    status.hidden = false;
+  }
+  try {
+    const result = await callWorker('github-push', { token });
+    const branch = typeof result?.branch === 'string' ? result.branch : repository?.branch || 'current branch';
+    const pushedCount = Number.isSafeInteger(result?.pushedCount) && result.pushedCount >= 0 ? result.pushedCount : 0;
+    const message = result?.upToDate
+      ? `Branch ${branch} is already up to date (${pushedCount} commits pushed).`
+      : `Pushed ${pushedCount} commit${pushedCount === 1 ? '' : 's'} to ${branch}.`;
+    githubPushInProgress = false;
+    closeDialog('github-push');
+    showToast(message);
+  } catch (error) {
+    const detail = error instanceof Error ? error.message : 'Unexpected error.';
+    const safeDetail = token ? detail.split(token).join('[redacted]') : detail;
+    if (status) {
+      status.textContent = `GitHub push failed: ${safeDetail} Check your network connection, confirm the token is valid and grants Contents: write access to this repository, and resolve any remote branch changes before retrying.`;
+      status.hidden = false;
+    }
+  } finally {
+    token = '';
+    tokenInput.value = '';
+    githubPushInProgress = false;
+    if (submitButton instanceof HTMLButtonElement) submitButton.disabled = false;
+  }
+});
+
 document.querySelector('[data-commit-form]')?.addEventListener('submit', async (event) => {
   event.preventDefault();
   const form = event.currentTarget;
@@ -651,7 +727,19 @@ document.querySelector('[data-upload-input]')?.addEventListener('change', async 
 });
 
 document.querySelectorAll('[data-dialog]').forEach((dialog) => {
-  dialog.addEventListener('click', (event) => { if (event.target === dialog) dialog.close(); });
+  dialog.addEventListener('click', (event) => { if (event.target === dialog && !(dialog.dataset.dialog === 'github-push' && githubPushInProgress)) dialog.close(); });
+  if (dialog.dataset.dialog === 'github-push') {
+    dialog.addEventListener('cancel', (event) => { if (githubPushInProgress) event.preventDefault(); });
+    dialog.addEventListener('close', () => {
+      const tokenInput = dialog.querySelector('#github-push-token');
+      const status = dialog.querySelector('[data-github-push-status]');
+      if (tokenInput instanceof HTMLInputElement) tokenInput.value = '';
+      if (status) {
+        status.textContent = '';
+        status.hidden = true;
+      }
+    });
+  }
 });
 
 async function initializeEditor() {

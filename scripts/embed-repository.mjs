@@ -58,8 +58,9 @@ async function main() {
 
   const branch = git(['symbolic-ref', '--quiet', '--short', 'HEAD']);
   if (!branch || branch.startsWith('(')) fail('detached HEAD is unsupported; check out a named branch.');
+  if (git(['rev-parse', '--show-object-format']) !== 'sha1') fail('SHA-256 Git repositories are unsupported by the browser Git/GitHub REST workflow; use SHA-1 objects.');
   const baseSha = git(['rev-parse', '--verify', 'HEAD^{commit}']);
-  if (!/^[0-9a-f]{40,64}$/i.test(baseSha)) fail('Git returned an invalid full commit SHA.');
+  if (!/^[0-9a-f]{40}$/i.test(baseSha)) fail('Git returned an invalid SHA-1 commit ID.');
 
   if (await fs.access(path.join(gitDir, 'shallow')).then(() => true, () => false)) {
     fail('shallow history is unsupported; fetch full history (for example, git fetch --unshallow).');

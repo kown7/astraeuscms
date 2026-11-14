@@ -1,7 +1,7 @@
 # Astro CMS design
 
-**Status:** MVP implementation complete; verification passed
-**Decision:** Embed a `.git`-only snapshot of the current local repository in the static build. The browser checks out `HEAD`, edits and commits locally, downloads the full working repository, and the owner pushes from the console.
+**Status:** GitHub REST push implementation in progress
+**Decision:** Embed a `.git`-only snapshot of the current local repository in the static build. The browser checks out `HEAD`, edits and commits locally, then either explicitly pushes local commits to GitHub via REST with a user PAT or downloads the full working repository for a console push.
 
 ## 1. Architecture at a glance
 
@@ -12,11 +12,14 @@ flowchart LR
     Site --> Admin["/admin/ editor"]
     Admin -->|load .git; checkout recorded HEAD| Browser["Browser Git filesystem"]
     Browser -->|edit, stage, commit locally| Browser
+    Browser -->|explicit push with in-memory PAT| API["GitHub Git Data REST API"]
+    API -->|fast-forward only| Remote["GitHub branch"]
     Browser -->|download .git + working tree ZIP| Console["Local console"]
-    Console -->|git push| Remote["Git remote"]
+    Console -->|optional native git push| Remote
 ```
 
-The browser contains a real local Git working repository, not a mock working-tree map. The initial static snapshot contains Git metadata and objects only; browser checkout materializes the files. There is no remote transport in the MVP. Export preserves browser-created commits for the terminal push.
+The browser contains a real local Git working repository, not a mock working-tree map. The initial static snapshot contains Git metadata and objects only; browser checkout materializes the files. There is no remote clone/fetch/pull or Git transport. Export preserves browser-created commits for native Git push.
+
 
 
 ## 2. Build-time Git snapshot
@@ -29,7 +32,7 @@ Recommended build procedure:
 
 1. Require a normal, non-bare clone on a named branch with full history. Before building, require a clean source tree; ignored generated `dist/` output, `base-git.zip`, and the snapshot sidecar are not source changes.
 2. Package the repository’s `.git` directory as `public/admin/base-git.zip` with metadata (schema version, base SHA, branch, and build time). Write the same metadata to `public/admin/snapshot.json` so the browser can detect a newer base without downloading the archive. Do not copy the worktree into the initial ZIP.
-3. Ensure the snapshot is self-contained and supported by the browser Git library: include the object database, refs, `HEAD`, index, and repository config needed for local checkout and commits. Reject linked worktrees, object alternates, shallow history, submodules, Git LFS, and other unsupported layouts rather than emit a partial repository.
+3. Ensure the snapshot is self-contained and supported by the browser Git library: include the object database, refs, `HEAD`, index, and repository config needed for local checkout and commits. Reject linked worktrees, object alternates, shallow history, submodules, Git LFS, SHA-256 object format, and other unsupported layouts rather than emit a partial repository.
 4. Require generated output (`dist/`), `.astro`, `node_modules`, `public/admin/base-git.zip`, and `public/admin/snapshot.json` to be ignored and untracked at `HEAD`; fail if they are tracked. Because the snapshot preserves full history, older commits may still contain such files.
 5. Astro copies both generated assets to `dist/admin/`. The default local build and the `/astrocms/` Pages build must reference them through the configured base path.
 
@@ -79,7 +82,7 @@ The admin route is `src/pages/admin/index.astro`, producing the reserved `/admin
 
 ## 4. Browser Git workspace
 
-The admin page is static HTML plus client-side JavaScript; no server adapter, Git proxy, or remote credential flow is needed.
+The admin page is static HTML plus client-side JavaScript; no server adapter or Git proxy is needed. The browser makes requests to GitHub only after an explicit push action.
 
 - Load and unpack the embedded `.git` snapshot into browser-backed storage, then checkout the recorded branch at `HEAD` to materialize the source files.
 - Show Menus, Blog posts, and Content lists as focused views, plus a Files view covering all checked-out repository paths.
@@ -87,13 +90,14 @@ The admin page is static HTML plus client-side JavaScript; no server adapter, Gi
 - Preview common image formats; upload/replace and download binary assets.
 - Create, rename, move, and delete files through explicit actions; deletion requires confirmation. Saving writes changes into the browser’s working tree.
 - Use `git.status`/status matrix to show modified, untracked, and deleted files. New content files use their collection paths, while Files can create anywhere in the repository.
-- Commit locally using `git.add` and `git.commit`. Collect commit message and author name/email in the UI; multiple commits are supported. No remote requests are made.
+- Commit locally using `git.add` and `git.commit`. Collect commit message and author name/email in the UI; multiple commits are supported.
+- “Push to GitHub” sends the missing local commit chain through the Git Data REST API. It uses a user-supplied fine-grained PAT with repository `Contents: write`, held only in memory for the push. No branch fetch/pull or force push; the ref update is fast-forward only.
 - Persist the repo and local commits in IndexedDB so a reload does not reset the branch. Show a clear export/backup reminder because browser storage can be cleared or evicted.
 - “Download repository” zips the current working tree and `.git` state, including local commit objects and refs.
 
 The initial UI uses the branch checked out at build time. It does not switch branches or fetch/pull remote changes.
 
-## 5. Console push workflow
+## 5. Publishing: GitHub REST and console fallback
 
 Unpacking the downloaded ZIP produces a Git working copy. The owner can run:
 
@@ -103,15 +107,18 @@ git log --oneline -5
 git push origin <current-branch>
 ```
 
-The export preserves the repository configuration from the `.git` snapshot. The owner pushes from the console using their normal Git setup; the browser never uses remote configuration or credentials.
 
-If the remote branch advanced since the embedded snapshot, native Git may reject the push. The owner resolves that in the console; the MVP does not fetch, rebase, merge, or resolve conflicts in the browser. No force-push.
+The explicit browser push uses [GitHub blob](https://docs.github.com/en/rest/git/blobs), [tree](https://docs.github.com/en/rest/git/trees), [commit](https://docs.github.com/en/rest/git/commits), and [reference](https://docs.github.com/en/rest/git/refs) endpoints. It creates missing objects in local commit order, verifies returned SHAs, then updates the branch ref with `force: false`. The fine-grained PAT needs repository `Contents: write`, is used only for that action, and is never stored.
+
+The export preserves repository configuration from the `.git` snapshot. The owner can instead push it from the console using their normal Git setup; browser REST push is optional and never automatic.
+
+If the GitHub branch has advanced outside the local commit history, browser REST push aborts without updating the ref. The owner resolves the divergence in the console and rebuilds the admin snapshot. Neither path force-pushes.
 
 ## 6. Public snapshot decision
 
 The initial `.git` archive is a public static asset and contains the included repository history and refs, not just files rendered by the site. Browser checkout materializes only the current `HEAD` as a working tree; older repository data remains in Git. This is an accepted MVP tradeoff, and `/admin/` is not private. The user has deferred password protection and other archive filtering for later.
 
-No encryption or authentication gate is included in this design. Authentication cannot be implemented by a static route alone, and encryption is not meaningful when its decryption key ships in the same static site. Browser operations remain local and use no remote credentials.
+No encryption or access-control gate is included for the static snapshot. A PAT is requested only for an explicit push, held in memory, and never written to IndexedDB or included in exports. A static key shipped with the site would not be private.
 
 ## 7. Static path behavior
 
@@ -126,12 +133,11 @@ Use the same build command in GitHub Actions with `ASTRO_BASE=/astrocms`; upload
 1. Publish the `dist/` artifact with GitHub Pages Actions and ignore the generated `.git` snapshot archive.
 2. Define YAML menu data and Markdown collections; migrate menu rendering to read the YAML data.
 3. Add the build-time `.git`-only snapshot, clean-tree check, and browser-compatible repository validation.
-4. Add `/admin/` with browser checkout of `HEAD`, an isomorphic-git working tree, persistence, full-repository text editing and asset operations, local status, and commit UI.
+4. Add `/admin/` with browser checkout of `HEAD`, an isomorphic-git working tree, persistence, full-repository text editing and asset operations, local commits, and explicit GitHub REST push.
 5. Add full working-repository ZIP download and verify the downloaded repo with native Git; verify root and `/astrocms/` deployments.
 
 ## 9. Deferred capabilities
 
-- Remote fetch/pull/push from the browser and GitHub REST API push.
-- Branch switching, multi-user access, authentication, browser conflict resolution, and force-push.
+- Remote clone/fetch/pull and Git smart-HTTP push; branch switching, multi-user access, authentication for the static site, browser conflict resolution, and force-push.
 - WYSIWYG editing, rich blocks, and previewing unpublished content through a real Astro runtime.
 - Encryption, until a passphrase/key can be supplied out-of-band and the static-hosting model is reevaluated.

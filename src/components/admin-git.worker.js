@@ -174,7 +174,21 @@ async function metadata() {
   const branch = await git.currentBranch({ fs, dir: REPO_DIR, fullname: false });
   const headSha = await git.resolveRef({ fs, dir: REPO_DIR, ref: 'HEAD' });
   const isStale = publishedSnapshot && (snapshot.baseSha !== publishedSnapshot.baseSha || snapshot.branch !== publishedSnapshot.branch);
-  return { ...snapshot, branch: branch || snapshot.branch, headSha, staleBase: Boolean(isStale) };
+  const origin = await git.getConfig({ fs, dir: REPO_DIR, path: 'remote.origin.url' });
+  return {
+    ...snapshot,
+    branch: branch || snapshot.branch,
+    headSha,
+    staleBase: Boolean(isStale),
+    githubTarget: parseGitHubOrigin(origin),
+  };
+}
+
+function parseGitHubOrigin(origin) {
+  if (typeof origin !== 'string') return null;
+  const match = origin.match(/^(?:https:\/\/github\.com\/|git@github\.com:)([^/]+)\/([^/]+?)(?:\.git)?$/i);
+  if (!match || match[1] === '.' || match[1] === '..' || match[2] === '.' || match[2] === '..') return null;
+  return { owner: match[1], repo: match[2] };
 }
 
 async function readFile(path) {
@@ -266,6 +280,248 @@ async function commit({ message, authorName, authorEmail }) {
   return { oid, message: commitMessage, author: name, email, timestamp: Math.floor(Date.now() / 1000) };
 }
 
+const GITHUB_API_BASE = 'https://api.github.com';
+const GITHUB_API_VERSION = '2026-03-10';
+const GITHUB_REQUEST_TIMEOUT_MS = 30_000;
+
+function githubApiError(response) {
+  const remaining = response.headers.get('x-ratelimit-remaining');
+  if (response.status === 429 || response.headers.has('retry-after') || remaining === '0') {
+    return new Error('GitHub API rate limit reached. Wait before retrying the push.');
+  }
+  if (response.status === 401) return new Error('GitHub rejected the token. Check that the fine-grained PAT is valid and has access to this repository.');
+  if (response.status === 403) return new Error('GitHub denied the request. Grant the fine-grained PAT Contents: write access to this repository and check any organization or branch policies.');
+  if (response.status === 404) return new Error('GitHub could not find the repository or origin branch, or the token cannot access it. Check the origin and current branch.');
+  if (response.status === 409) return new Error('GitHub detected a branch conflict. Fetch and reconcile the branch from a console before retrying.');
+  if (response.status === 422) return new Error('GitHub rejected the Git object or branch update. Confirm Contents: write permission and check branch protection; use the console workflow if needed.');
+  return new Error(`GitHub API request failed with status ${response.status}.`);
+}
+
+async function githubRequest({ token, url, method = 'GET', body }) {
+  const controller = new AbortController();
+  const timeout = setTimeout(() => controller.abort(), GITHUB_REQUEST_TIMEOUT_MS);
+  let response;
+  try {
+    try {
+      response = await fetch(url, {
+        method,
+        headers: {
+          Accept: 'application/vnd.github+json',
+          Authorization: `Bearer ${token}`,
+          'X-GitHub-Api-Version': GITHUB_API_VERSION,
+          ...(body === undefined ? {} : { 'Content-Type': 'application/json' }),
+        },
+        ...(body === undefined ? {} : { body: JSON.stringify(body) }),
+        signal: controller.signal,
+      });
+    } catch {
+      if (controller.signal.aborted) throw new Error('GitHub API request timed out. Check connectivity and try again.');
+      throw new Error('Could not reach GitHub. Check connectivity and try again.');
+    }
+    if (!response.ok) throw githubApiError(response);
+    try {
+      return await response.json();
+    } catch {
+      if (controller.signal.aborted) throw new Error('GitHub API request timed out. Check connectivity and try again.');
+      throw new Error('GitHub returned an unreadable response. Retry, or use the console workflow.');
+    }
+  } finally {
+    clearTimeout(timeout);
+  }
+}
+
+function githubRepositoryPath({ owner, repo }) {
+  return `/repos/${encodeURIComponent(owner)}/${encodeURIComponent(repo)}`;
+}
+
+function encodedBranchPath(branch) {
+  return branch.split('/').map((part) => encodeURIComponent(part)).join('/');
+}
+
+function githubDate(person) {
+  const offset = Number.isFinite(person.timezoneOffset) ? person.timezoneOffset : 0;
+  const eastOffset = -offset;
+  const date = new Date((person.timestamp - offset * 60) * 1000);
+  const pad = (value) => String(value).padStart(2, '0');
+  const sign = eastOffset < 0 ? '-' : '+';
+  const absoluteOffset = Math.abs(eastOffset);
+  return `${date.getUTCFullYear()}-${pad(date.getUTCMonth() + 1)}-${pad(date.getUTCDate())}T${pad(date.getUTCHours())}:${pad(date.getUTCMinutes())}:${pad(date.getUTCSeconds())}${sign}${pad(Math.floor(absoluteOffset / 60))}:${pad(absoluteOffset % 60)}`;
+}
+
+async function githubPush(payload) {
+  let token = payload.token;
+  payload.token = '';
+  try {
+    if (typeof token !== 'string' || !token.trim()) throw new Error('Enter a fine-grained GitHub PAT with Contents: write access to this repository.');
+    token = token.trim();
+
+    const origin = await git.getConfig({ fs, dir: REPO_DIR, path: 'remote.origin.url' });
+    if (typeof origin !== 'string' || !origin) throw new Error('Configure a GitHub origin before pushing.');
+    const target = parseGitHubOrigin(origin);
+    if (!target) throw new Error('Only https://github.com/owner/repo[.git] and git@github.com:owner/repo[.git] origins are supported.');
+
+    const matrix = await git.statusMatrix({ fs, dir: REPO_DIR });
+    if (matrix.some(([, head, workdir, stage]) => head !== workdir || head !== stage)) {
+      throw new Error('Commit or discard all working-tree and staged changes before pushing.');
+    }
+    const branch = await git.currentBranch({ fs, dir: REPO_DIR, fullname: false });
+    if (!branch) throw new Error('Check out a local branch before pushing.');
+    const headSha = await git.resolveRef({ fs, dir: REPO_DIR, ref: branch });
+    const repositoryPath = githubRepositoryPath(target);
+    const branchPath = encodedBranchPath(branch);
+    const refUrl = `${GITHUB_API_BASE}${repositoryPath}/git/ref/heads/${branchPath}`;
+    const updateRefUrl = `${GITHUB_API_BASE}${repositoryPath}/git/refs/heads/${branchPath}`;
+    const remoteRef = await githubRequest({ token, url: refUrl });
+    const remoteHead = remoteRef?.object?.sha;
+    if (!remoteHead || remoteRef.object.type !== 'commit') {
+      throw new Error('The configured GitHub origin branch does not point to a commit. Check the remote branch in a console.');
+    }
+    if (remoteHead === headSha) {
+      return { owner: target.owner, repo: target.repo, branch, pushedCount: 0, remoteHead, upToDate: true };
+    }
+
+    const commitsToPush = [];
+    const visited = new Set();
+    let remoteIsAncestor = false;
+    async function visitCommit(oid) {
+      if (oid === remoteHead) {
+        remoteIsAncestor = true;
+        return;
+      }
+      if (visited.has(oid)) return;
+      visited.add(oid);
+      let localCommit;
+      try {
+        localCommit = (await git.readCommit({ fs, dir: REPO_DIR, oid })).commit;
+      } catch {
+        throw new Error('The GitHub branch is not in this browser repository history. Fetch and reconcile it from a console, then reload.');
+      }
+      for (const parent of localCommit.parent) await visitCommit(parent);
+      commitsToPush.push({ oid, commit: localCommit });
+    }
+    await visitCommit(headSha);
+    if (!remoteIsAncestor) {
+      throw new Error('The GitHub origin branch has diverged from or advanced beyond this browser repository. Fetch and reconcile it from a console, then reload.');
+    }
+
+    const blobShas = new Map();
+    const treeEntries = new Map();
+    async function uploadBlob(oid) {
+      if (blobShas.has(oid)) return blobShas.get(oid);
+      const { blob } = await git.readBlob({ fs, dir: REPO_DIR, oid });
+      const result = await githubRequest({
+        token,
+        url: `${GITHUB_API_BASE}${repositoryPath}/git/blobs`,
+        method: 'POST',
+        body: { content: Buffer.from(blob).toString('base64'), encoding: 'base64' },
+      });
+      if (result?.sha !== oid) throw new Error('GitHub changed a local blob object. The branch was not updated; export/push from a console instead.');
+      blobShas.set(oid, result.sha);
+      return result.sha;
+    }
+    async function readTreeEntries(oid) {
+      if (!oid) return [];
+      if (!treeEntries.has(oid)) {
+        const { tree } = await git.readTree({ fs, dir: REPO_DIR, oid });
+        treeEntries.set(oid, tree);
+      }
+      return treeEntries.get(oid);
+    }
+    async function createMatchingTree(targetTree, baseTree) {
+      if (targetTree === baseTree) return targetTree;
+      const [targetEntries, baseEntries] = await Promise.all([
+        readTreeEntries(targetTree),
+        readTreeEntries(baseTree),
+      ]);
+      const targetByPath = new Map(targetEntries.map((entry) => [entry.path, entry]));
+      const baseByPath = new Map(baseEntries.map((entry) => [entry.path, entry]));
+      const paths = new Set([...targetByPath.keys(), ...baseByPath.keys()]);
+      const changes = [];
+      for (const path of paths) {
+        const next = targetByPath.get(path);
+        const previous = baseByPath.get(path);
+        if (!next) {
+          changes.push({ path, mode: previous.mode, type: previous.type, sha: null });
+          continue;
+        }
+        if (previous && next.oid === previous.oid && next.mode === previous.mode && next.type === previous.type) continue;
+        if (next.type === 'tree') {
+          const baseSubtree = previous?.type === 'tree' ? previous.oid : null;
+          const subtreeSha = await createMatchingTree(next.oid, baseSubtree);
+          changes.push({ path, mode: next.mode, type: 'tree', sha: subtreeSha });
+        } else {
+          const sha = next.type === 'blob' ? await uploadBlob(next.oid) : next.oid;
+          changes.push({ path, mode: next.mode, type: next.type, sha });
+        }
+      }
+      const body = { tree: changes };
+      if (baseTree) body.base_tree = baseTree;
+      const result = await githubRequest({
+        token,
+        url: `${GITHUB_API_BASE}${repositoryPath}/git/trees`,
+        method: 'POST',
+        body,
+      });
+      if (result?.sha !== targetTree) {
+        throw new Error('GitHub changed a local tree object. The branch was not updated; export/push from a console instead.');
+      }
+      return result.sha;
+    }
+
+    for (const { oid, commit: localCommit } of commitsToPush) {
+      const firstParent = localCommit.parent[0];
+      const baseTree = firstParent
+        ? (await git.readCommit({ fs, dir: REPO_DIR, oid: firstParent })).commit.tree
+        : null;
+      const treeSha = await createMatchingTree(localCommit.tree, baseTree);
+      if (treeSha !== localCommit.tree) {
+        throw new Error('GitHub changed a local tree object. The branch was not updated; export/push from a console instead.');
+      }
+      const result = await githubRequest({
+        token,
+        url: `${GITHUB_API_BASE}${repositoryPath}/git/commits`,
+        method: 'POST',
+        body: {
+          message: localCommit.message,
+          tree: treeSha,
+          parents: localCommit.parent,
+          author: {
+            name: localCommit.author.name,
+            email: localCommit.author.email,
+            date: githubDate(localCommit.author),
+          },
+          committer: {
+            name: localCommit.committer.name,
+            email: localCommit.committer.email,
+            date: githubDate(localCommit.committer),
+          },
+        },
+      });
+      if (result?.sha !== oid) {
+        throw new Error('GitHub changed a local commit object. The branch was not updated; export/push from a console instead.');
+      }
+    }
+
+    await githubRequest({
+      token,
+      url: updateRefUrl,
+      method: 'PATCH',
+      body: { sha: headSha, force: false },
+    });
+    return {
+      owner: target.owner,
+      repo: target.repo,
+      branch,
+      pushedCount: commitsToPush.length,
+      remoteHead: headSha,
+      upToDate: false,
+    };
+  } finally {
+    token = '';
+    payload.token = '';
+  }
+}
+
 async function exportRepository() {
   const zipEntries = {};
   async function visit(directory) {
@@ -306,6 +562,7 @@ async function handle(type, payload) {
     case 'log': return log();
     case 'metadata': return metadata();
     case 'commit': return commit(payload);
+    case 'github-push': return githubPush(payload);
     case 'export': return exportRepository();
     default: throw new Error(`Unknown repository operation: ${type}`);
   }
