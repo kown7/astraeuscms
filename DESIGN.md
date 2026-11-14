@@ -1,6 +1,6 @@
 # Astro CMS design
 
-**Status:** GitHub REST push implementation in progress
+**Status:** Implementation complete; authenticated GitHub push requires a user PAT for end-to-end verification
 **Decision:** Embed a `.git`-only snapshot of the current local repository in the static build. The browser checks out `HEAD`, edits and commits locally, then either explicitly pushes local commits to GitHub via REST with a user PAT or downloads the full working repository for a console push.
 
 ## 1. Architecture at a glance

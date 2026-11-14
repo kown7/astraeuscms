@@ -1,6 +1,6 @@
 # Astro CMS requirements
 
-**Status:** GitHub REST push implementation in progress
+**Status:** Implementation complete; authenticated GitHub push requires a user PAT for end-to-end verification
 **Product shape:** Static Astro site containing a build-time `.git` snapshot. The browser checks out `HEAD`, edits and commits locally, then downloads the full working repository for a console push.
 
 ## 1. Goal
