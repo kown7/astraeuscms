@@ -236,6 +236,104 @@ async function status() {
   return matrix.map(([path, head, workdir, stage]) => ({ path, head, workdir, stage }));
 }
 
+const MAX_INLINE_DIFF_BYTES = 256 * 1024;
+const MAX_DIFF_CELLS = 300_000;
+const MAX_DIFF_LINES = 2_000;
+
+function decodeDiffText(bytes) {
+  if (bytes.includes(0)) return null;
+  try { return new TextDecoder('utf-8', { fatal: true }).decode(bytes); } catch { return null; }
+}
+
+function diffLines(beforeText, afterText) {
+  const before = beforeText === '' ? [] : beforeText.split(/\r?\n/);
+  const after = afterText === '' ? [] : afterText.split(/\r?\n/);
+  if (beforeText.endsWith('\n')) before.pop();
+  if (afterText.endsWith('\n')) after.pop();
+  const columns = after.length + 1;
+  const cells = (before.length + 1) * columns;
+  if (cells > MAX_DIFF_CELLS) {
+    return { kind: 'large', message: 'Inline diff skipped because this file has too many lines for a safe preview.' };
+  }
+
+  const lcs = new Uint32Array(cells);
+  for (let oldIndex = before.length - 1; oldIndex >= 0; oldIndex--) {
+    for (let newIndex = after.length - 1; newIndex >= 0; newIndex--) {
+      const index = oldIndex * columns + newIndex;
+      lcs[index] = before[oldIndex] === after[newIndex]
+        ? lcs[(oldIndex + 1) * columns + newIndex + 1] + 1
+        : Math.max(lcs[(oldIndex + 1) * columns + newIndex], lcs[index + 1]);
+    }
+  }
+
+  const operations = [];
+  let oldIndex = 0;
+  let newIndex = 0;
+  while (oldIndex < before.length || newIndex < after.length) {
+    if (oldIndex < before.length && newIndex < after.length && before[oldIndex] === after[newIndex]) {
+      operations.push({ type: 'context', oldLine: oldIndex + 1, newLine: newIndex + 1, text: before[oldIndex] });
+      oldIndex++;
+      newIndex++;
+    } else if (newIndex < after.length && (oldIndex === before.length || lcs[oldIndex * columns + newIndex + 1] > lcs[(oldIndex + 1) * columns + newIndex])) {
+      operations.push({ type: 'addition', newLine: newIndex + 1, text: after[newIndex] });
+      newIndex++;
+    } else {
+      operations.push({ type: 'removal', oldLine: oldIndex + 1, text: before[oldIndex] });
+      oldIndex++;
+    }
+  }
+
+  const added = operations.filter((operation) => operation.type === 'addition').length;
+  const removed = operations.filter((operation) => operation.type === 'removal').length;
+  if (added + removed > MAX_DIFF_LINES) {
+    return { kind: 'large', message: `Inline diff skipped because it contains more than ${MAX_DIFF_LINES.toLocaleString()} changed lines.` };
+  }
+  const ranges = [];
+  for (let index = 0; index < operations.length; index++) {
+    if (operations[index].type === 'context') continue;
+    const start = Math.max(0, index - 3);
+    const end = Math.min(operations.length - 1, index + 3);
+    const previous = ranges[ranges.length - 1];
+    if (previous && start <= previous.end + 1) previous.end = end;
+    else ranges.push({ start, end });
+  }
+  const rows = [];
+  for (const range of ranges) {
+    if (rows.length) rows.push({ type: 'gap' });
+    for (let index = range.start; index <= range.end; index++) rows.push(operations[index]);
+  }
+  if (rows.length > MAX_DIFF_LINES * 4) {
+    return { kind: 'large', message: 'Inline diff skipped because it contains too many separate changes.' };
+  }
+  return { kind: 'text', added, removed, rows };
+}
+
+async function diffFile(path) {
+  path = repoPath(path);
+  const matrix = await git.statusMatrix({ fs, dir: REPO_DIR });
+  const entry = matrix.find(([entryPath]) => entryPath === path);
+  if (!entry || (entry[1] === entry[2] && entry[1] === entry[3])) {
+    return { path, kind: 'unchanged', message: 'This file has no current worktree diff.' };
+  }
+  const [, head, workdir] = entry;
+  const headSha = await git.resolveRef({ fs, dir: REPO_DIR, ref: 'HEAD' });
+  const before = head === 0
+    ? new Uint8Array()
+    : (await git.readBlob({ fs, dir: REPO_DIR, oid: headSha, filepath: path })).blob;
+  const after = workdir === 0 ? new Uint8Array() : await pfs.readFile(`${REPO_DIR}/${path}`);
+  const sizes = { oldSize: before.byteLength, newSize: after.byteLength };
+  if (sizes.oldSize > MAX_INLINE_DIFF_BYTES || sizes.newSize > MAX_INLINE_DIFF_BYTES) {
+    return { path, kind: 'large', ...sizes, message: 'Inline diff skipped because this file exceeds the 256 KB preview limit.' };
+  }
+  const beforeText = decodeDiffText(before);
+  const afterText = decodeDiffText(after);
+  if (beforeText === null || afterText === null) {
+    return { path, kind: 'binary', ...sizes, message: 'Binary file changed; inline text diff is unavailable.' };
+  }
+  return { path, ...sizes, ...diffLines(beforeText, afterText) };
+}
+ 
+
 async function metadata() {
   const branch = await git.currentBranch({ fs, dir: REPO_DIR, fullname: false });
   const headSha = await git.resolveRef({ fs, dir: REPO_DIR, ref: 'HEAD' });
@@ -717,6 +815,7 @@ async function handle(type, payload) {
     case 'remove': return removeFile(payload.path);
     case 'rename': return renameFile(payload.from, payload.to);
     case 'status': return status();
+    case 'diff': return diffFile(payload.path);
     case 'log': return log();
     case 'metadata': return metadata();
     case 'commit': return commit(payload);

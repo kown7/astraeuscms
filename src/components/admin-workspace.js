@@ -374,6 +374,86 @@ function renderCommits() {
   });
 }
 
+function renderDiffPreview(preview, counts, result) {
+  preview.replaceChildren();
+  preview.classList.toggle('diff-message', result.kind !== 'text');
+  if (result.kind !== 'text') {
+    preview.textContent = result.message || 'Diff preview unavailable.';
+    counts.textContent = '';
+    return;
+  }
+  counts.textContent = `+${result.added} −${result.removed}`;
+  if (!result.rows.length) {
+    preview.textContent = 'No text differences in the current worktree.';
+    preview.classList.add('diff-message');
+    return;
+  }
+  for (const row of result.rows) {
+    const line = document.createElement('span');
+    line.className = `diff-line diff-${row.type}`;
+    if (row.type === 'gap') {
+      line.textContent = '…';
+    } else {
+      const marker = row.type === 'addition' ? '+' : row.type === 'removal' ? '-' : ' ';
+      const lineNumber = row.type === 'addition' ? row.newLine : row.oldLine;
+      line.textContent = `${marker} ${String(lineNumber ?? '').padStart(4, ' ')} ${row.text}`;
+    }
+    preview.append(line);
+  }
+}
+
+function renderChanges() {
+  const list = document.querySelector('[data-change-list]');
+  if (!list) return;
+  list.replaceChildren();
+  const changed = statuses
+    .filter((item) => statusFor(item.path) !== 'Tracked')
+    .sort((a, b) => a.path.localeCompare(b.path));
+  setText('[data-change-count]', `${changed.length} changed file${changed.length === 1 ? '' : 's'}`);
+  if (!changed.length) {
+    const empty = document.createElement('p');
+    empty.className = 'change-empty';
+    empty.textContent = 'No uncommitted changes. Save edits in the editor to review them here.';
+    list.append(empty);
+    return;
+  }
+  for (const item of changed) {
+    const details = document.createElement('details');
+    details.className = 'change-file';
+    const summary = document.createElement('summary');
+    const path = document.createElement('code');
+    path.className = 'change-file-path';
+    path.textContent = item.path;
+    const badge = document.createElement('span');
+    badge.className = 'change-status';
+    badge.textContent = statusFor(item.path);
+    const counts = document.createElement('span');
+    counts.className = 'diff-counts';
+    summary.append(path, badge, counts);
+    const preview = document.createElement('pre');
+    preview.className = 'change-diff';
+    preview.textContent = 'Expand to load diff.';
+    details.append(summary, preview);
+    details.addEventListener('toggle', async () => {
+      if (!details.open || details.dataset.diffLoaded === 'true' || details.dataset.diffLoading === 'true') return;
+      details.dataset.diffLoading = 'true';
+      preview.classList.remove('diff-message');
+      preview.textContent = 'Loading diff…';
+      try {
+        const result = await callWorker('diff', { path: item.path });
+        renderDiffPreview(preview, counts, result);
+        details.dataset.diffLoaded = 'true';
+      } catch (error) {
+        preview.classList.add('diff-message');
+        preview.textContent = `Diff unavailable: ${error instanceof Error ? error.message : String(error)}`;
+      } finally {
+        delete details.dataset.diffLoading;
+      }
+    });
+    list.append(details);
+  }
+}
+
 async function refreshRepository(initial = false) {
   if (initial) {
     const result = await callWorker('init', { baseUrl: BASE_URL });
@@ -393,6 +473,7 @@ async function refreshRepository(initial = false) {
   renderMetadata();
   renderFileList();
   renderRecentFiles();
+  renderChanges();
   renderCommits();
   updateEditorState();
   setText('[data-repository-state]', `${files.length} files ready in this browser`);
@@ -437,16 +518,29 @@ async function prepareGitHubPush() {
 function openPublishedResetDialog() {
   const confirmationInput = document.querySelector('#published-reset-confirmation');
   const status = document.querySelector('[data-published-reset-status]');
+  const validation = document.querySelector('[data-published-reset-validation]');
   if (confirmationInput instanceof HTMLInputElement) confirmationInput.value = '';
   if (status) {
     status.textContent = '';
     status.hidden = true;
+  }
+  if (validation) {
+    validation.textContent = '';
+    validation.hidden = true;
   }
   setText('[data-reset-branch]', repository?.branch || '—');
   setText('[data-reset-head]', repository?.headSha?.slice(0, 12) || '—');
   openDialog('published-reset');
   confirmationInput?.focus();
 }
+
+document.querySelector('#published-reset-confirmation')?.addEventListener('input', () => {
+  const validation = document.querySelector('[data-published-reset-validation]');
+  if (validation) {
+    validation.textContent = '';
+    validation.hidden = true;
+  }
+});
 
 function handleAction(action) {
   switch (action) {
@@ -671,12 +765,28 @@ document.querySelector('[data-github-push-form]')?.addEventListener('submit', as
 document.querySelector('[data-published-reset-form]')?.addEventListener('submit', async (event) => {
   event.preventDefault();
   const form = event.currentTarget;
-  if (!(form instanceof HTMLFormElement) || resetInProgress || !form.reportValidity()) return;
+  if (!(form instanceof HTMLFormElement) || resetInProgress) return;
   const confirmationInput = form.querySelector('input[name="confirmation"]');
+  const validation = form.querySelector('[data-published-reset-validation]');
   const status = form.querySelector('[data-published-reset-status]');
   const submitButton = form.querySelector('[data-published-reset-submit]');
   if (!(confirmationInput instanceof HTMLInputElement)) return;
-  const confirmation = confirmationInput.value.trim();
+  if (confirmationInput.value !== 'RESET') {
+    if (validation) {
+      validation.textContent = confirmationInput.value.trim() === 'RESET'
+        ? 'Remove leading or trailing whitespace; enter RESET exactly.'
+        : 'Type RESET exactly to confirm.';
+      validation.hidden = false;
+    }
+    confirmationInput.focus();
+    return;
+  }
+  if (validation) {
+    validation.textContent = '';
+    validation.hidden = true;
+  }
+  if (!form.reportValidity()) return;
+  const confirmation = confirmationInput.value;
   resetInProgress = true;
   if (submitButton instanceof HTMLButtonElement) submitButton.disabled = true;
   if (status) {
@@ -715,7 +825,39 @@ document.querySelector('[data-published-reset-form]')?.addEventListener('submit'
 document.querySelector('[data-commit-form]')?.addEventListener('submit', async (event) => {
   event.preventDefault();
   const form = event.currentTarget;
-  if (!(form instanceof HTMLFormElement) || !form.reportValidity()) return;
+  if (!(form instanceof HTMLFormElement)) return;
+  const validation = form.querySelector('[data-commit-validation]');
+  const messageInput = form.elements.namedItem('message');
+  const authorNameInput = form.elements.namedItem('authorName');
+  const authorEmailInput = form.elements.namedItem('authorEmail');
+  let invalidField = null;
+  let validationMessage = '';
+  if (messageInput instanceof HTMLInputElement && !messageInput.value.trim()) {
+    invalidField = messageInput;
+    validationMessage = 'Enter a commit message.';
+  } else if (authorNameInput instanceof HTMLInputElement && !authorNameInput.value.trim()) {
+    invalidField = authorNameInput;
+    validationMessage = 'Enter an author name.';
+  } else if (authorEmailInput instanceof HTMLInputElement && !authorEmailInput.value.trim()) {
+    invalidField = authorEmailInput;
+    validationMessage = 'Enter an author email address.';
+  } else if (authorEmailInput instanceof HTMLInputElement && !authorEmailInput.validity.valid) {
+    invalidField = authorEmailInput;
+    validationMessage = 'Enter a valid email address, such as name@example.com.';
+  }
+  if (validationMessage) {
+    if (validation) {
+      validation.textContent = validationMessage;
+      validation.hidden = false;
+    }
+    invalidField?.focus();
+    return;
+  }
+  if (validation) {
+    validation.textContent = '';
+    validation.hidden = true;
+  }
+  if (!form.reportValidity()) return;
   const data = new FormData(form);
   try {
     if (editor && isTextFile && editor.value !== savedText) {
@@ -733,6 +875,14 @@ document.querySelector('[data-commit-form]')?.addEventListener('submit', async (
     showToast(`Created commit ${commit.oid.slice(0, 10)}.`);
   } catch (error) {
     showToast(`Commit failed: ${error.message}`);
+  }
+});
+
+document.querySelector('[data-commit-form]')?.addEventListener('input', () => {
+  const validation = document.querySelector('[data-commit-validation]');
+  if (validation) {
+    validation.textContent = '';
+    validation.hidden = true;
   }
 });
 
