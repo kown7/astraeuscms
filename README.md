@@ -1,6 +1,6 @@
 # Astro CMS
 
-A local-first CMS for Astro. Edit the repository and create local Git commits in `/admin/`. Explicitly push to GitHub with a fine-grained PAT, reset the browser workspace to the repository ZIP from the current deployment, or download the full repository and push from your console. PATs are used only for pushes and are not saved; page code can read them while entered, so use a repository-scoped token.
+A local-first CMS for Astro. Edit the repository in `/admin/`; use its Git page to create and review local commits. Explicitly push to GitHub with a fine-grained PAT, reset the browser workspace to the repository ZIP from the current deployment, or download the full repository and push from your console. PATs are used only for pushes and are not saved; page code can read them while entered, so use a repository-scoped token.
 
 At development start, `npm run dev` creates a `.git`-only snapshot from the current `HEAD` (allowing a dirty worktree). `npm run build` requires a clean working tree and packages the current Git metadata into `public/admin/base-git.zip`, alongside `public/admin/snapshot.json`; the browser checks out that commit to materialize the files.
 

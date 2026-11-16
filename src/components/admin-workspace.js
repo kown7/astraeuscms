@@ -65,7 +65,7 @@ function showScreen(name, activeView = name) {
     else item.removeAttribute('aria-current');
   });
   const crumb = document.querySelector('[data-breadcrumb]');
-  if (crumb) crumb.textContent = name === 'editor' ? (activeView === 'files' ? 'Files' : categoryNames[category]) : name === 'commits' ? 'Commit history' : 'Overview';
+  if (crumb) crumb.textContent = name === 'editor' ? (activeView === 'files' ? 'Files' : categoryNames[category]) : name === 'commits' ? 'Git' : 'Overview';
   currentView = activeView;
   window.scrollTo({ top: 0, behavior: 'smooth' });
 }

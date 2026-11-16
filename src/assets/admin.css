@@ -199,8 +199,8 @@ h3 { margin: 0; color: #343947; font-size: 11px; letter-spacing: -.1px; }
 .commit-inline > div > span:last-child { display: flex; flex-direction: column; gap: 4px; }
 .commit-inline strong { color: #555b68; font-size: 9px; }
 .commit-inline small { color: #9ba1ac; font-size: 8px; }
-.editor-footnote { margin-top: 11px; padding: 9px 10px; display: flex; align-items: flex-start; gap: 7px; border: 1px solid #eceef3; border-radius: 7px; color: #898f9b; background: #fafbfc; font-size: 8px; line-height: 1.5; }
-.info-icon { width: 14px; height: 14px; display: grid; place-items: center; flex: 0 0 auto; border-radius: 50%; color: #6861d0; background: #eeedff; font: 700 9px Georgia, serif; }
+.git-commit-card { margin-bottom: 12px; overflow: hidden; }
+.git-commit-card .commit-inline { border-top: 0; }
 
 /* Commit history */
 .git-state-bar { min-height: 39px; margin-bottom: 12px; padding: 0 11px; display: flex; align-items: center; gap: 10px; border: 1px solid #e8eaf0; border-radius: 7px; color: #7c8290; background: #fff; font-size: 8px; }
