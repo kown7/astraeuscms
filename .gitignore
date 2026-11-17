@@ -26,3 +26,5 @@ pnpm-debug.log*
 # generated public Git snapshot
 public/admin/base-git.zip
 public/admin/snapshot.json
+
+.wrangler
