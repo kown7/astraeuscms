@@ -189,6 +189,13 @@ h3 { margin: 0; color: #343947; font-size: 11px; letter-spacing: -.1px; }
 .line-gutter { padding: 17px 8px 17px 0; border-right: 1px solid #eff0f3; color: #b3b7c0; text-align: right; white-space: pre; user-select: none; font: 9px/20px ui-monospace, SFMono-Regular, Menlo, monospace; }
 .text-editor { width: 100%; min-height: 330px; padding: 17px 14px; border: 0; outline: 0; resize: none; color: #525a69; background: transparent; font: 9px/20px ui-monospace, SFMono-Regular, Menlo, monospace; tab-size: 2; white-space: pre; overflow: auto; }
 .text-editor:focus { outline: 0; }
+.markdown-editor-panel { min-height: 330px; flex: 1; overflow: auto; background: #fff; }
+.markdown-editor-panel[hidden] { display: none; }
+.markdown-frontmatter-note { padding: 8px 14px; border-bottom: 1px solid #f0e2c6; color: #876f4c; background: #fffaf0; font-size: 9px; }
+.markdown-editor-mount { min-height: 330px; }
+.markdown-editor-panel .ck.ck-editor { --ck-color-base-background: #fdfdfe; --ck-color-toolbar-background: #fff; --ck-color-base-border: #eceef2; --ck-color-focus-border: #a69aef; height: 100%; }
+.markdown-editor-panel .ck-editor__editable { min-height: 330px; padding: 17px 14px; font-size: 13px; }
+.markdown-editor-panel .ck.ck-toolbar { flex-wrap: wrap; }
 .editor-status { min-height: 28px; padding: 0 11px; display: flex; align-items: center; justify-content: space-between; border-top: 1px solid #eff0f3; color: #a0a5af; font-size: 7px; }
 .editor-status > span:first-child { display: flex; align-items: center; gap: 5px; }
 .editor-status i { width: 5px; height: 5px; border-radius: 50%; background: #aeb3bd; }
@@ -331,6 +338,8 @@ h3 { margin: 0; color: #343947; font-size: 11px; letter-spacing: -.1px; }
 	.file-list { max-height: 115px; }
 	.editor-content { min-height: 300px; }
 	.text-editor { min-height: 300px; }
+	.markdown-editor-panel, .markdown-editor-mount { min-height: 300px; }
+.markdown-editor-panel .ck-editor__editable { min-height: 300px; }
 	.editor-toolbar { gap: 6px; padding: 0 8px; }
 	.editor-language { display: none; }
 	.commit-inline { align-items: flex-start; flex-direction: column; }

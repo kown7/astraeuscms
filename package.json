@@ -18,6 +18,7 @@
     "@isomorphic-git/lightning-fs": "^4.10.5",
     "astro": "^7.4.8",
     "buffer": "^6.0.3",
+    "ckeditor5": "^49.1.0",
     "fflate": "^0.8.3",
     "isomorphic-git": "^1.44.13"
   }

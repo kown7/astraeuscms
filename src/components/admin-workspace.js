@@ -3,6 +3,11 @@ const screens = [...document.querySelectorAll('[data-screen]')];
 const navItems = [...document.querySelectorAll('.nav-item[data-view]')];
 const editor = document.querySelector('[data-text-editor]');
 const lineGutter = document.querySelector('[data-line-gutter]');
+const textPanel = document.querySelector('[data-text-panel]');
+const markdownPanel = document.querySelector('[data-markdown-panel]');
+const markdownMount = document.querySelector('[data-markdown-editor]');
+const markdownToggle = document.querySelector('[data-action="toggle-markdown-mode"]');
+const markdownFrontmatterNote = document.querySelector('[data-markdown-frontmatter-note]');
 const toast = document.querySelector('[data-toast]');
 const worker = new Worker(new URL('./admin-git.worker.js', import.meta.url), { type: 'module' });
 const pending = new Map();
@@ -18,6 +23,18 @@ let category = 'menus';
 let selectedPath = '';
 let savedText = '';
 let isTextFile = false;
+let isMarkdownFile = false;
+let markdownEditor = null;
+let markdownModulePromise = null;
+let markdownEditorInitialization = null;
+let markdownEditorGeneration = 0;
+let fileOpenGeneration = 0;
+let markdownEditorMode = 'source';
+let markdownFrontmatter = '';
+let markdownBodySuffix = '';
+let markdownLineEnding = '\n';
+let markdownVisualEdited = false;
+let markdownSettingData = false;
 let imageUrl = '';
 let fileFilter = '';
 let githubPushInProgress = false;
@@ -128,6 +145,123 @@ function updateEditorState() {
   if (downloadButton) downloadButton.disabled = !selectedPath || isTextFile;
 }
 
+function splitMarkdownFrontmatter(source) {
+  const match = /^(\uFEFF?---[ \t]*\r?\n[\s\S]*?\r?\n---[ \t]*)(\r?\n(?:[ \t]*\r?\n)*|$)([\s\S]*)$/.exec(source);
+  if (match) return { frontmatter: `${match[1]}${match[2]}`, body: match[3], malformed: false };
+  return {
+    frontmatter: '',
+    body: source,
+    malformed: /^\uFEFF?---[ \t]*\r?\n/.test(source),
+  };
+}
+
+function splitMarkdownBodyEnding(source) {
+  const match = /(?:\r?\n)*$/.exec(source);
+  return { body: source.slice(0, match.index), suffix: match[0] };
+}
+
+function setMarkdownMode(mode) {
+  markdownEditorMode = mode;
+  const visual = isMarkdownFile && Boolean(markdownEditor) && mode === 'visual';
+  if (textPanel) textPanel.hidden = visual;
+  if (markdownPanel) markdownPanel.hidden = !visual;
+  if (markdownToggle) {
+    markdownToggle.hidden = !isMarkdownFile || !markdownEditor;
+    markdownToggle.textContent = mode === 'visual' ? 'Source' : 'Visual';
+    markdownToggle.setAttribute('aria-label', mode === 'visual' ? 'Switch to source mode' : 'Switch to visual mode');
+  }
+  if (markdownFrontmatterNote) markdownFrontmatterNote.hidden = !visual || !markdownFrontmatter;
+}
+
+function syncMarkdownEditorToSource() {
+  if (!editor || !markdownEditor || !isMarkdownFile || markdownEditorMode !== 'visual' || !markdownVisualEdited) return;
+  const body = markdownEditor.getData().replace(/\r\n?/g, '\n').replace(/\n+$/, '').replace(/\n/g, markdownLineEnding);
+  const source = `${markdownFrontmatter}${body}${markdownBodySuffix}`;
+  if (editor.value === source) return;
+  editor.value = source;
+  updateLineNumbers();
+  updateEditorState();
+}
+
+async function loadMarkdownEditor() {
+  if (!markdownModulePromise) {
+    markdownModulePromise = import('./ckeditor-markdown.js').catch((error) => {
+      markdownModulePromise = null;
+      throw error;
+    });
+  }
+  return markdownModulePromise;
+}
+
+async function disposeMarkdownEditor() {
+  markdownEditorGeneration++;
+  const instance = markdownEditor;
+  markdownEditor = null;
+  if (instance) await instance.destroy();
+  if (markdownEditorInitialization) await markdownEditorInitialization.catch(() => {});
+  markdownMount?.replaceChildren();
+}
+
+async function createMarkdownEditor(initialData) {
+  const generation = ++markdownEditorGeneration;
+  const initialization = (async () => {
+    const module = await loadMarkdownEditor();
+    if (generation !== markdownEditorGeneration || !markdownMount) return false;
+    const instance = await module.createMarkdownEditor(markdownMount, initialData);
+    if (generation !== markdownEditorGeneration) {
+      await instance.destroy();
+      return false;
+    }
+    markdownEditor = instance;
+    instance.model.document.on('change:data', () => {
+      if (generation !== markdownEditorGeneration || markdownSettingData || markdownEditorMode !== 'visual') return;
+      markdownVisualEdited = true;
+      syncMarkdownEditorToSource();
+    });
+    return true;
+  })();
+  markdownEditorInitialization = initialization;
+  try {
+    return await initialization;
+  } finally {
+    if (markdownEditorInitialization === initialization) markdownEditorInitialization = null;
+  }
+}
+
+function toggleMarkdownMode() {
+  if (!isMarkdownFile || !markdownEditor || !editor) return;
+  if (markdownEditorMode === 'visual') {
+    syncMarkdownEditorToSource();
+    markdownVisualEdited = false;
+    setMarkdownMode('source');
+    editor.focus();
+  } else {
+    const parsed = splitMarkdownFrontmatter(editor.value);
+    if (parsed.malformed) {
+      showToast('Cannot switch to visual mode: the Astro frontmatter block is not closed. Fix it in source mode.');
+      return;
+    }
+    markdownSettingData = true;
+    try {
+      const parsedBody = splitMarkdownBodyEnding(parsed.body);
+      markdownBodySuffix = parsedBody.suffix;
+      markdownLineEnding = editor.value.includes('\r\n') ? '\r\n' : '\n';
+      markdownEditor.setData(parsedBody.body);
+    } catch (error) {
+      showToast(`Could not switch to visual mode: ${error.message}`);
+      return;
+    } finally {
+      markdownSettingData = false;
+    }
+    markdownFrontmatter = parsed.frontmatter;
+    markdownVisualEdited = false;
+    setMarkdownMode('visual');
+    markdownEditor.editing.view.focus();
+  }
+  updateLineNumbers();
+  updateEditorState();
+}
+
 function renderFileList() {
   const list = document.querySelector('[data-file-list]');
   if (!list) return;
@@ -181,13 +315,23 @@ function revokeImageUrl() {
   imageUrl = '';
 }
 
-function clearSelectedFile() {
+async function clearSelectedFile() {
+  fileOpenGeneration++;
+  await disposeMarkdownEditor();
   revokeImageUrl();
   selectedPath = '';
   savedText = '';
   isTextFile = false;
+  isMarkdownFile = false;
+  markdownFrontmatter = '';
+  markdownVisualEdited = false;
+  markdownBodySuffix = '';
+  markdownLineEnding = '\n';
+  setMarkdownMode('source');
   if (editor) { editor.value = ''; editor.disabled = true; }
-  document.querySelector('[data-text-panel]').hidden = false;
+  if (textPanel) textPanel.hidden = false;
+  if (markdownPanel) markdownPanel.hidden = true;
+  if (markdownFrontmatterNote) markdownFrontmatterNote.hidden = true;
   document.querySelector('[data-binary-panel]').hidden = true;
   document.querySelector('[data-image-preview]').hidden = true;
   setText('[data-editor-filename]', 'Select a file');
@@ -200,6 +344,7 @@ function clearSelectedFile() {
 }
 
 async function mayLeaveCurrentFile() {
+  syncMarkdownEditorToSource();
   if (!selectedPath || !editor || !isTextFile || editor.value === savedText) return true;
   if (!window.confirm('Save your unsaved editor changes before continuing? Choose Cancel to stay on this file.')) return false;
   await saveSelected();
@@ -209,11 +354,21 @@ async function mayLeaveCurrentFile() {
 async function openFile(path) {
   if (path === selectedPath) return;
   if (!(await mayLeaveCurrentFile())) return;
+  const generation = ++fileOpenGeneration;
   try {
     const result = await callWorker('read', { path });
+    if (generation !== fileOpenGeneration) return;
+    await disposeMarkdownEditor();
+    if (generation !== fileOpenGeneration) return;
     revokeImageUrl();
     selectedPath = result.path;
     isTextFile = result.isText;
+    isMarkdownFile = result.isText && /\.(md|markdown)$/i.test(result.path);
+    markdownFrontmatter = '';
+    markdownVisualEdited = false;
+    markdownBodySuffix = '';
+    markdownLineEnding = result.text.includes('\r\n') ? '\r\n' : '\n';
+    setMarkdownMode('source');
     const filename = path.split('/').at(-1);
     const [markValue, markClass] = markFor(path);
     const mark = document.querySelector('[data-editor-mark]');
@@ -221,15 +376,39 @@ async function openFile(path) {
     setText('[data-editor-path]', path);
     if (mark) { mark.textContent = markValue; mark.className = `file-mark ${markClass}`; }
     const extension = path.split('.').at(-1).toUpperCase();
-    setText('[data-language]', result.isText ? (extension || 'TEXT') : 'BINARY');
+    setText('[data-language]', result.isText ? (isMarkdownFile ? 'Markdown · GFM' : (extension || 'TEXT')) : 'BINARY');
     if (result.isText) {
-      document.querySelector('[data-text-panel]').hidden = false;
+      if (textPanel) textPanel.hidden = false;
+      if (markdownPanel) markdownPanel.hidden = true;
       document.querySelector('[data-binary-panel]').hidden = true;
       if (editor) { editor.disabled = false; editor.value = result.text; }
       savedText = result.text;
+      if (isMarkdownFile) {
+        const parsed = splitMarkdownFrontmatter(result.text);
+        if (parsed.malformed) {
+          showToast('This Markdown file has an unclosed Astro frontmatter block; source editing remains available.');
+        } else {
+          markdownFrontmatter = parsed.frontmatter;
+          const parsedBody = splitMarkdownBodyEnding(parsed.body);
+          markdownBodySuffix = parsedBody.suffix;
+          markdownLineEnding = result.text.includes('\r\n') ? '\r\n' : '\n';
+          if (markdownPanel) markdownPanel.hidden = false;
+          if (textPanel) textPanel.hidden = true;
+          try {
+            const created = await createMarkdownEditor(parsedBody.body);
+            if (generation !== fileOpenGeneration || selectedPath !== result.path || !created) return;
+            setMarkdownMode('visual');
+          } catch (error) {
+            if (generation !== fileOpenGeneration) return;
+            setMarkdownMode('source');
+            showToast(`Visual Markdown editor unavailable; source mode remains available: ${error.message}`);
+          }
+        }
+      }
     } else {
       if (editor) { editor.value = ''; editor.disabled = true; }
-      document.querySelector('[data-text-panel]').hidden = true;
+      if (textPanel) textPanel.hidden = true;
+      if (markdownPanel) markdownPanel.hidden = true;
       document.querySelector('[data-binary-panel]').hidden = false;
       const image = document.querySelector('[data-image-preview]');
       const message = document.querySelector('[data-binary-message]');
@@ -249,14 +428,16 @@ async function openFile(path) {
     updateEditorState();
     renderFileList();
   } catch (error) {
-    showToast(`Could not open file: ${error.message}`);
+    if (generation === fileOpenGeneration) showToast(`Could not open file: ${error.message}`);
   }
 }
 
 async function saveSelected() {
+  syncMarkdownEditorToSource();
   if (!selectedPath || !editor || !isTextFile) return;
   await callWorker('write', { path: selectedPath, contents: editor.value });
   savedText = editor.value;
+  markdownVisualEdited = false;
   await refreshRepository();
   updateEditorState();
   showToast('Saved to the local repository worktree.');
@@ -561,16 +742,19 @@ function handleAction(action) {
     case 'upload': document.querySelector('[data-upload-input]')?.click(); break;
     case 'download-file': void downloadSelectedFile(); break;
     case 'flow-help': void selectView('commits'); break;
+    case 'toggle-markdown-mode': toggleMarkdownMode(); break;
     default: break;
   }
 }
 
 async function exportRepository() {
   try {
+    syncMarkdownEditorToSource();
     if (editor && selectedPath && isTextFile && editor.value !== savedText) {
       if (!window.confirm('Save unsaved editor changes before exporting?')) return;
       await callWorker('write', { path: selectedPath, contents: editor.value });
       savedText = editor.value;
+      markdownVisualEdited = false;
       await refreshRepository();
     }
     const data = await callWorker('export');
@@ -628,7 +812,7 @@ async function deleteSelected() {
   if (!window.confirm(`Delete ${path} from the local worktree? This change will be included in the next commit.`)) return;
   try {
     await callWorker('remove', { path });
-    clearSelectedFile();
+    await clearSelectedFile();
     await refreshRepository();
     showToast('File deleted from the local worktree.');
   } catch (error) {
@@ -664,7 +848,7 @@ async function selectView(name) {
     renderFileList();
     const first = files.find(({ path }) => name === 'files' || kindFor(path) === category);
     if (first) await openFile(first.path);
-    else clearSelectedFile();
+    else await clearSelectedFile();
     return;
   }
   if (!(await mayLeaveCurrentFile())) return;
@@ -798,7 +982,7 @@ document.querySelector('[data-published-reset-form]')?.addEventListener('submit'
     const result = await callWorker('reset-published', { confirmation });
     resetComplete = true;
     selectedPath = '';
-    clearSelectedFile();
+    await clearSelectedFile();
     await refreshRepository();
     showScreen('overview', 'overview');
     const message = result.cleanupWarning
@@ -860,9 +1044,11 @@ document.querySelector('[data-commit-form]')?.addEventListener('submit', async (
   if (!form.reportValidity()) return;
   const data = new FormData(form);
   try {
+    syncMarkdownEditorToSource();
     if (editor && isTextFile && editor.value !== savedText) {
       await callWorker('write', { path: selectedPath, contents: editor.value });
       savedText = editor.value;
+      markdownVisualEdited = false;
     }
     const commit = await callWorker('commit', {
       message: String(data.get('message') || ''),
