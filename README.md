@@ -24,3 +24,12 @@ After editing, use **Push to GitHub** with a fine-grained PAT that has repositor
 ## Snapshot metadata
 
 `admin/snapshot.json` is public and contains the snapshot version, base commit SHA, branch, and build timestamp. It contains no repository files or credentials. Encrypting `base-git.zip` would not hide this metadata. ZIP encryption is not currently enabled.
+
+## Planned optional snapshot encryption
+
+Snapshot ZIP encryption is not implemented yet. The intended build behavior is:
+
+- `ASTRAEUSCMS_SNAPSHOT_KEY_HEX` is optional. If it is unset, the build publishes `base-git.zip` unencrypted; this is acceptable for public pages.
+- If set, it must contain a 32-byte AES key encoded as 64 hexadecimal characters. The build will use AES-256-GCM to encrypt the ZIP.
+- Store the key as a GitHub Actions secret and pass it only to the snapshot-packaging step. Never inject it into Astro/Vite client code or the generated site.
+- Users of an encrypted admin will need the key out of band; the browser can prompt for it and keep it in memory. The public `snapshot.json` metadata remains visible either way.
