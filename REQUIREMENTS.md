@@ -55,8 +55,8 @@ The MVP MUST list and edit existing menu, blog, and generic-content records and 
 ### Build-time Git repository
 
 - **REQ-01:** `npm run build` MUST require a clean source working tree (excluding generated output) and package the current local `.git` state; it MUST NOT contact a Git remote.
-- **REQ-02:** The embedded archive MUST contain a usable `.git` directory (objects, refs, HEAD, index, and required config) but MUST NOT duplicate the checked-out working tree. On first initialization into an empty browser filesystem, the browser MUST force-checkout the recorded `HEAD` to materialize tracked files.
-- **REQ-03:** Snapshot metadata MUST record its schema version, base `HEAD` SHA, current branch, build timestamp, and archive-encryption mode; publish a small sidecar so persisted browser workspaces can detect when a newer base is deployed.
+- **REQ-02:** The embedded archive MUST contain a usable `.git` directory (objects, refs, HEAD, index, and required config) but MUST NOT duplicate the checked-out working tree. Builds MAY encrypt the archive with AES-256-GCM using `ASTRAEUSCMS_SNAPSHOT_KEY_HEX`; when the key is absent or empty the archive MUST remain plaintext. On first initialization into an empty browser filesystem, the browser MUST decrypt an encrypted archive with the user-supplied key, then force-checkout the recorded `HEAD` to materialize tracked files.
+- **REQ-03:** Snapshot metadata MUST record its schema version, base `HEAD` SHA, current branch, build timestamp, and archive-encryption mode; encrypted snapshots MUST also record their IV. Publish a small sidecar so persisted browser workspaces can detect when a newer base is deployed.
 - **REQ-04:** Browser checkout and downloaded export MUST preserve existing commit history and binary files. Browser-created commits MUST be descendants of the embedded branch.
 - **REQ-05:** The current `HEAD` MUST NOT track generated output (`dist/`), `node_modules`, Astro caches, or generated snapshot artifacts (`base-git.zip` and `snapshot.json`). These paths MUST be ignored and absent from the source worktree before build; the complete Git history may still contain older generated files.
 - **REQ-06:** The MVP MUST fail clearly on unsupported repository layouts/features (such as bare repositories, linked worktrees, object alternates, shallow history, submodules, Git LFS, or SHA-256 object format) rather than produce a partial repository.
@@ -87,16 +87,16 @@ Generated `dist/` output MUST remain untracked. GitHub Actions deploys the `dist
 
 ## 7. Public snapshot decision
 
-The `.git` snapshot is a public static asset. It includes Git history and refs; the browser checks out the current `HEAD`, but older or otherwise unrendered repository data remains in the archive. This is an accepted MVP tradeoff. `/admin/` is not an access-control boundary.
+The `.git` snapshot is a public static asset. It includes Git history and refs; the browser checks out the current `HEAD`, but older or otherwise unrendered repository data remains in the archive. Without a build key, the archive is public plaintext. Encryption protects only the deployed archive—not a public GitHub source repository, browser-local IndexedDB data, or downloaded exports. `/admin/` is not an access-control boundary.
 
 - **REQ-20:** The build MUST package the Git state needed for browser checkout and local commits; the checked-out source tree MUST be materialized from Git objects, not copied into the initial snapshot.
 - **REQ-21:** The browser MUST NOT use Git transport clone/fetch/pull. It MAY call GitHub REST only for explicit push actions against the configured GitHub `origin`.
 - **REQ-22:** The downloaded export MUST contain both `.git` and the checked-out working tree so native Git can inspect and push it.
-- **REQ-23:** The MVP has no encryption or access-control gate for the static snapshot. User-supplied PATs MUST NOT enter the snapshot or export.
+- **REQ-23:** The key MUST NOT be included in the snapshot, sidecar, or generated client code. The browser MUST request it out of band and keep it only in memory. User-supplied PATs MUST NOT enter the snapshot or export.
 - **REQ-24:** A GitHub push MUST create the missing local commit chain through GitHub’s Git Data REST endpoints, then update the configured branch with `force: false`.
 - **REQ-25:** The push UI MUST request a repository-scoped fine-grained PAT with `Contents: write`; tokens MUST be held only in memory for the operation and never logged, exported, or persisted. The UI MUST warn that page scripts can access a token while it is entered.
 - **REQ-26:** A GitHub push MUST stop without updating the branch ref if the remote branch is not an ancestor of local `HEAD` or GitHub object hashes do not match the local commits.
-- **REQ-27:** “Reset to snapshot” MUST fetch the current deployment’s `admin/snapshot.json` and `admin/base-git.zip` with cache bypass, validate that the archive metadata matches the sidecar, and materialize the snapshot in staging before replacing the browser repository. It MUST require a checked confirmation box and replace local edits, uncommitted changes, and local commits only after validation succeeds. Fetch, archive, or checkout failures MUST leave the active workspace unchanged; incomplete cleanup MUST be surfaced. Reset MUST NOT contact GitHub.
+- **REQ-27:** “Reset to snapshot” MUST fetch the current deployment’s `admin/snapshot.json` and `admin/base-git.zip` with cache bypass, validate that the archive metadata matches the sidecar, decrypt with the user-supplied key when required, and materialize the snapshot in staging before replacing the browser repository. It MUST require a checked confirmation box and replace local edits, uncommitted changes, and local commits only after validation succeeds. Fetch, archive, decryption, or checkout failures MUST leave the active workspace unchanged; incomplete cleanup MUST be surfaced. Reset MUST NOT contact GitHub.
 
 ## 8. Out of scope for the MVP
 
@@ -115,4 +115,5 @@ The `.git` snapshot is a public static asset. It includes Git history and refs; 
 6. The owner can inspect and push the export with native Git, or explicitly push local commits through GitHub REST; neither workflow pushes automatically.
 7. With a valid GitHub PAT and a fast-forwardable branch, the explicit REST push publishes the local commit chain; a divergent branch is rejected without force.
 8. The admin can explicitly reset to the current deployment’s embedded repository ZIP; reset requires checking a confirmation box, replaces browser-local edits and commits, persists across reloads, and leaves the active workspace unchanged if the ZIP cannot be fetched or validated.
-9. A stale base or unsupported repository layout is surfaced rather than silently overwritten or partially exported.
+9. With `ASTRAEUSCMS_SNAPSHOT_KEY_HEX` unset or empty, the build emits a usable plaintext repository ZIP; with a valid 64-hex key, it emits an AES-256-GCM archive that can be unlocked in the browser without persisting the key.
+10. A stale base or unsupported repository layout is surfaced rather than silently overwritten or partially exported.

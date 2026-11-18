@@ -3,11 +3,14 @@ import { promises as fs } from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { zipSync } from 'fflate';
+import { Buffer } from 'node:buffer';
+import { createCipheriv, randomBytes } from 'node:crypto';
 
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 const gitDir = path.join(root, '.git');
 const archivePath = path.join(root, 'public', 'admin', 'base-git.zip');
 const metadataPath = path.join(root, 'public', 'admin', 'snapshot.json');
+const ENCRYPTED_ARCHIVE_MAGIC = Buffer.from('ASTRAEUS-ENC');
 
 function fail(message) {
   console.error(`Cannot create Git snapshot: ${message}`);
@@ -106,17 +109,29 @@ async function main() {
   await fs.mkdir(path.dirname(archivePath), { recursive: true });
   await fs.rm(archivePath, { force: true });
 
+  const keyHex = process.env.ASTRAEUSCMS_SNAPSHOT_KEY_HEX?.trim() || '';
+  if (keyHex && !/^[0-9a-f]{64}$/i.test(keyHex)) {
+    fail('ASTRAEUSCMS_SNAPSHOT_KEY_HEX must be exactly 64 hexadecimal characters (32 bytes).');
+  }
+  const iv = keyHex ? randomBytes(12) : null;
   const metadata = {
     snapshotVersion: 1,
     baseSha,
     branch,
     builtAt: new Date().toISOString(),
-    archiveEncryption: 'none',
+    archiveEncryption: iv ? 'aes-256-gcm' : 'none',
+    ...(iv ? { archiveIv: iv.toString('base64') } : {}),
   };
   const metadataBytes = new TextEncoder().encode(JSON.stringify(metadata, null, 2));
   const files = await collectGitFiles(gitDir);
   files['snapshot.json'] = metadataBytes;
-  await fs.writeFile(archivePath, zipSync(files, { level: 6 }));
+  let archive = zipSync(files, { level: 6 });
+  if (iv) {
+    const cipher = createCipheriv('aes-256-gcm', Buffer.from(keyHex, 'hex'), iv);
+    const ciphertext = Buffer.concat([cipher.update(archive), cipher.final(), cipher.getAuthTag()]);
+    archive = Buffer.concat([ENCRYPTED_ARCHIVE_MAGIC, Buffer.from([1]), iv, ciphertext]);
+  }
+  await fs.writeFile(archivePath, archive);
   await fs.writeFile(metadataPath, metadataBytes);
 }
 

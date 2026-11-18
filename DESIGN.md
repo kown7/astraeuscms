@@ -119,8 +119,8 @@ The export preserves repository configuration from the `.git` snapshot. The owne
 If the GitHub branch has diverged from local history, push aborts without updating refs. Resolve divergence in the console. Reset is not a merge: after explicit confirmation it replaces the browser workspace with the current deployment snapshot.
 
 ## 6. Public snapshot decision
-No encryption or access-control gate is included for the static snapshot. A PAT is requested only for explicit GitHub push, held in memory, and never written to IndexedDB or included in exports. Page JavaScript can read it while entered, so use a fine-grained token restricted to this repository and revoke it if exposed. Reset uses only the public snapshot already served by the current deployment.
-The initial `.git` archive is a public static asset and contains the included repository history and refs, not just files rendered by the site. Browser checkout materializes only the current `HEAD` as a working tree; older repository data remains in Git. This is an accepted MVP tradeoff, and `/admin/` is not private. The user has deferred password protection and other archive filtering for later.
+Snapshot encryption is optional. With `ASTRAEUSCMS_SNAPSHOT_KEY_HEX` absent, the build publishes the `.git`-only archive as plaintext; with a valid 32-byte key (64 hex characters), it encrypts the archive using AES-256-GCM. The key is supplied as a GitHub Actions secret to the packaging step only, never included in the client bundle. Editors enter it out of band; the browser decrypts in memory and does not persist it. The public `snapshot.json` sidecar still exposes its base SHA, branch, build time, encryption mode, and IV.
+This protects only the published archive. It does not encrypt the browser’s local IndexedDB working repository or exported ZIPs, and it does not conceal source/history from users who can access a public GitHub repository. A PAT is requested only for explicit GitHub push, held in memory, and never written to IndexedDB or included in exports. Page JavaScript can read it while entered, so use a fine-grained token restricted to this repository and revoke it if exposed. Reset uses only the public snapshot already served by the current deployment.
 
 
 ## 7. Static path behavior
@@ -143,4 +143,4 @@ Use the same build command in GitHub Actions with `ASTRO_BASE=/astraeuscms`; upl
 
 - Git smart-HTTP clone/fetch/pull; branch switching, multi-user access, authentication for the static site, merge/rebase conflict-resolution UI, and force-push.
 - WYSIWYG editing, rich blocks, and previewing unpublished content through a real Astro runtime.
-- Encryption, until a passphrase/key can be supplied out-of-band and the static-hosting model is reevaluated.
+- Per-user encryption keys, server-side access control, and archive filtering.

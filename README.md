@@ -21,16 +21,12 @@ Open `http://localhost:4321/admin/`.
 
 After editing, use **Push to GitHub** with a fine-grained PAT that has repository `Contents: write`. **Reset to snapshot** replaces this browser’s local edits and commits with the ZIP in the current deployment; export the repository first if you need to keep that work. Reset does not fetch GitHub—the deployment snapshot changes only after a new build and deployment. Alternatively, download the repository ZIP and use `git status`, `git log`, and `git push origin <branch>` from your console.
 
-## Snapshot metadata
+## Snapshot metadata and optional encryption
 
-`admin/snapshot.json` is public and contains the snapshot version, base commit SHA, branch, build timestamp, and `archiveEncryption` mode (`none` today). It contains no repository files or credentials. Encrypting `base-git.zip` would not hide this metadata. ZIP encryption is not currently enabled.
+`admin/snapshot.json` is public and contains the snapshot version, base commit SHA, branch, build timestamp, archive-encryption mode, and AES-GCM IV when enabled. It contains no repository files, key, or credentials. This metadata remains visible when the ZIP is encrypted.
 
-## Planned optional snapshot encryption
+`ASTRAEUSCMS_SNAPSHOT_KEY_HEX` is optional. When unset or empty, builds publish a plaintext `base-git.zip`; when set, it must be a 32-byte AES key encoded as exactly 64 hexadecimal characters, and the build encrypts the ZIP with AES-256-GCM. The GitHub Actions workflow reads this value from the repository Actions secret of the same name; if that secret is absent, deployment remains plaintext. Local encrypted builds use the same environment variable.
 
-Snapshot ZIP encryption is not implemented yet. The intended build behavior is:
+Users opening or resetting to an encrypted snapshot must enter the key out of band. The browser uses it only to decrypt the ZIP and does not store it. A wrong key leaves the current workspace unchanged. This protects only the published base ZIP: it does not encrypt browser-local repository data or exported ZIPs, and it cannot hide a publicly readable GitHub repository.
 
-- `ASTRAEUSCMS_SNAPSHOT_KEY_HEX` is optional. If it is unset, the build publishes `base-git.zip` unencrypted; this is acceptable for public pages.
-- If set, it must contain a 32-byte AES key encoded as 64 hexadecimal characters. The build will use AES-256-GCM to encrypt the ZIP.
-- Store the key as a GitHub Actions secret and pass it only to the snapshot-packaging step. Never inject it into Astro/Vite client code or the generated site.
-- Users of an encrypted admin will need the key out of band; the browser can prompt for it and keep it in memory. The public `snapshot.json` metadata remains visible either way.
-- The public `archiveEncryption` field drives the sidebar status icon (`📄` for `none`, `🔑` for `aes-256-gcm`) and does not reveal the key.
+The sidebar uses 📄 for `none` and 🔑 for `aes-256-gcm`. A missing key selects plaintext mode.

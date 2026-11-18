@@ -15,6 +15,8 @@ const BASE_URL = import.meta.env.BASE_URL.endsWith('/') ? import.meta.env.BASE_U
 const COMMIT_AUTHOR_COOKIE = 'astraeuscms_commit_author';
 const COMMIT_AUTHOR_COOKIE_MAX_AGE = 60 * 60 * 24 * 365;
 const UPSTREAM_STATE_STORAGE_KEY = 'astraeuscms_last_known_upstream';
+const SNAPSHOT_KEY_REQUIRED = 'SNAPSHOT_ENCRYPTION_KEY_REQUIRED';
+const SNAPSHOT_KEY_INVALID = 'SNAPSHOT_ENCRYPTION_KEY_INVALID';
 let requestId = 0;
 let toastTimer;
 let files = [];
@@ -715,9 +717,9 @@ function renderChanges() {
   }
 }
 
-async function refreshRepository(initial = false) {
+async function refreshRepository(initial = false, encryptionKeyHex = '') {
   if (initial) {
-    const result = await callWorker('init', { baseUrl: BASE_URL });
+    const result = await callWorker('init', { baseUrl: BASE_URL, encryptionKeyHex });
     repository = result.metadata;
     files = result.files;
     statuses = result.status;
@@ -783,6 +785,16 @@ function openDialog(name) {
   if (dialog instanceof HTMLDialogElement && !dialog.open) dialog.showModal();
 }
 
+function openSnapshotKeyDialog(message = '') {
+  const error = document.querySelector('[data-snapshot-key-error]');
+  if (error) {
+    error.textContent = message;
+    error.hidden = !message;
+  }
+  openDialog('snapshot-key');
+  document.querySelector('#snapshot-encryption-key')?.focus();
+}
+
 function closeDialog(name) {
   if ((name === 'github-push' && githubPushInProgress) || (name === 'published-reset' && resetInProgress)) return;
   const dialog = document.querySelector(`[data-dialog="${name}"]`);
@@ -812,9 +824,17 @@ async function prepareGitHubPush() {
 
 function openPublishedResetDialog() {
   const confirmationInput = document.querySelector('#published-reset-confirmation');
+  const encryptionSection = document.querySelector('[data-reset-encryption-section]');
+  const encryptionKeyInput = document.querySelector('#reset-encryption-key');
   const status = document.querySelector('[data-published-reset-status]');
   const validation = document.querySelector('[data-published-reset-validation]');
+  const needsEncryptionKey = repository?.archiveEncryption === 'aes-256-gcm';
   if (confirmationInput instanceof HTMLInputElement) confirmationInput.checked = false;
+  if (encryptionSection) encryptionSection.hidden = !needsEncryptionKey;
+  if (encryptionKeyInput instanceof HTMLInputElement) {
+    encryptionKeyInput.value = '';
+    encryptionKeyInput.required = needsEncryptionKey;
+  }
   if (status) {
     status.textContent = '';
     status.hidden = true;
@@ -1066,6 +1086,8 @@ document.querySelector('[data-published-reset-form]')?.addEventListener('submit'
   const form = event.currentTarget;
   if (!(form instanceof HTMLFormElement) || resetInProgress) return;
   const confirmationInput = form.querySelector('input[name="confirmation"]');
+  const encryptionSection = form.querySelector('[data-reset-encryption-section]');
+  const encryptionKeyInput = form.querySelector('input[name="encryptionKey"]');
   const validation = form.querySelector('[data-published-reset-validation]');
   const status = form.querySelector('[data-published-reset-status]');
   const submitButton = form.querySelector('[data-published-reset-submit]');
@@ -1091,7 +1113,10 @@ document.querySelector('[data-published-reset-form]')?.addEventListener('submit'
   }
   let resetComplete = false;
   try {
-    const result = await callWorker('reset-published', { confirmation: confirmationInput.checked });
+    const result = await callWorker('reset-published', {
+      confirmation: confirmationInput.checked,
+      encryptionKeyHex: encryptionKeyInput instanceof HTMLInputElement ? encryptionKeyInput.value.trim() : '',
+    });
     resetComplete = true;
     selectedPath = '';
     await clearSelectedFile();
@@ -1105,7 +1130,20 @@ document.querySelector('[data-published-reset-form]')?.addEventListener('submit'
     form.reset();
     showToast(message);
   } catch (error) {
-    const detail = error instanceof Error ? error.message : 'Unexpected error.';
+    const keySection = error instanceof Error && error.message === SNAPSHOT_KEY_REQUIRED;
+    const badKey = error instanceof Error && error.message === SNAPSHOT_KEY_INVALID;
+    const detail = keySection
+      ? 'This snapshot is encrypted. Enter the 64-character key to reset the workspace.'
+      : badKey ? 'The key did not decrypt this snapshot. Check it and try again.'
+        : error instanceof Error ? error.message : 'Unexpected error.';
+    if (keySection) {
+      if (encryptionSection) encryptionSection.hidden = false;
+      if (encryptionKeyInput instanceof HTMLInputElement) {
+        encryptionKeyInput.required = true;
+        encryptionKeyInput.focus();
+      }
+    }
+    if (badKey && encryptionKeyInput instanceof HTMLInputElement) encryptionKeyInput.focus();
     if (status) {
       status.textContent = resetComplete
         ? `The reset completed, but the interface could not reload the repository: ${detail} Reload the page.`
@@ -1236,9 +1274,11 @@ document.querySelector('[data-upload-input]')?.addEventListener('change', async 
 });
 
 document.querySelectorAll('[data-dialog]').forEach((dialog) => {
-  const isBusy = () => (dialog.dataset.dialog === 'github-push' && githubPushInProgress) || (dialog.dataset.dialog === 'published-reset' && resetInProgress);
+  const isBusy = () => (dialog.dataset.dialog === 'github-push' && githubPushInProgress)
+    || (dialog.dataset.dialog === 'published-reset' && resetInProgress)
+    || dialog.dataset.dialog === 'snapshot-key';
   dialog.addEventListener('click', (event) => { if (event.target === dialog && !isBusy()) dialog.close(); });
-  if (dialog.dataset.dialog === 'github-push' || dialog.dataset.dialog === 'published-reset') {
+  if (dialog.dataset.dialog === 'github-push' || dialog.dataset.dialog === 'published-reset' || dialog.dataset.dialog === 'snapshot-key') {
     dialog.addEventListener('cancel', (event) => { if (isBusy()) event.preventDefault(); });
     dialog.addEventListener('close', () => {
       const tokenInput = dialog.querySelector('input[name="token"]');
@@ -1246,6 +1286,9 @@ document.querySelectorAll('[data-dialog]').forEach((dialog) => {
       const status = dialog.querySelector('[role="alert"][aria-live="assertive"]');
       if (tokenInput instanceof HTMLInputElement) tokenInput.value = '';
       if (confirmationInput instanceof HTMLInputElement) confirmationInput.value = '';
+      dialog.querySelectorAll('[data-encryption-key]').forEach((input) => {
+        if (input instanceof HTMLInputElement) input.value = '';
+      });
       if (status) {
         status.textContent = '';
         status.hidden = true;
@@ -1254,11 +1297,48 @@ document.querySelectorAll('[data-dialog]').forEach((dialog) => {
   }
 });
 
+document.querySelector('[data-snapshot-key-form]')?.addEventListener('submit', async (event) => {
+  event.preventDefault();
+  const form = event.currentTarget;
+  if (!(form instanceof HTMLFormElement)) return;
+  const keyInput = form.querySelector('input[name="key"]');
+  const error = form.querySelector('[data-snapshot-key-error]');
+  const submitButton = form.querySelector('[data-snapshot-key-submit]');
+  if (!(keyInput instanceof HTMLInputElement) || !form.reportValidity()) return;
+  let keyHex = keyInput.value.trim();
+  keyInput.value = '';
+  if (submitButton instanceof HTMLButtonElement) submitButton.disabled = true;
+  try {
+    await refreshRepository(true, keyHex);
+    closeDialog('snapshot-key');
+    form.reset();
+    showScreen('overview', 'overview');
+  } catch (failure) {
+    const message = failure instanceof Error && failure.message === SNAPSHOT_KEY_INVALID
+      ? 'That key did not decrypt the snapshot. Check the key and try again.'
+      : `Could not unlock the snapshot: ${failure instanceof Error ? failure.message : 'Unexpected error.'}`;
+    if (error) {
+      error.textContent = message;
+      error.hidden = false;
+    }
+    keyInput.focus();
+  } finally {
+    keyHex = '';
+    if (submitButton instanceof HTMLButtonElement) submitButton.disabled = false;
+  }
+});
+
 async function initializeEditor() {
   try {
     await refreshRepository(true);
     showScreen('overview', 'overview');
   } catch (error) {
+    if (error instanceof Error && error.message === SNAPSHOT_KEY_REQUIRED) {
+      setText('[data-repository-state]', 'Encrypted snapshot requires a key');
+      setText('[data-sidebar-state]', 'Unlock required');
+      openSnapshotKeyDialog();
+      return;
+    }
     setText('[data-repository-state]', 'Repository initialization failed');
     setText('[data-sidebar-state]', 'Initialization failed');
     showToast(`Could not open repository: ${error.message}`);

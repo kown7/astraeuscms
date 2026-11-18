@@ -63,6 +63,11 @@ const baseUrl = import.meta.env.BASE_URL.endsWith('/') ? import.meta.env.BASE_UR
 		<h2>Restore the published snapshot</h2>
 		<p class="modal-copy">This downloads the Git repository ZIP embedded in the current server deployment, validates its branch and commit, then replaces this browser’s repository. It does not fetch from GitHub.</p>
 		<div class="export-facts"><div><span>CURRENT BRANCH</span><strong data-reset-branch>—</strong></div><div><span>CURRENT HEAD</span><strong><code data-reset-head>—</code></strong></div><div><span>RESTORE TARGET</span><strong>Current deployment ZIP</strong></div></div>
+    <div class="reset-encryption-key" data-reset-encryption-section hidden>
+      <label for="reset-encryption-key">Snapshot encryption key</label>
+      <input id="reset-encryption-key" name="encryptionKey" data-encryption-key type="password" pattern="[0-9a-fA-F]{64}" autocomplete="off" autocapitalize="off" spellcheck="false" placeholder="64 hexadecimal characters" aria-describedby="reset-encryption-key-help" />
+      <p id="reset-encryption-key-help" class="modal-copy">The key is used only in this browser session and is never saved.</p>
+    </div>
 		<p class="modal-copy">Reset discards all browser-local edits, uncommitted changes, local commits, and unsaved editor text. Export the repository ZIP first if you need to keep any of that work.</p>
     <label class="reset-confirmation"><input id="published-reset-confirmation" name="confirmation" type="checkbox" required aria-describedby="published-reset-validation" /><span>I understand this will replace all browser-local edits, files, and commits.</span></label>
 		<p id="published-reset-validation" class="form-validation-error" data-published-reset-validation role="alert" aria-live="assertive" hidden></p>
@@ -73,6 +78,18 @@ const baseUrl = import.meta.env.BASE_URL.endsWith('/') ? import.meta.env.BASE_UR
 
 
 
+<dialog class="modal" data-dialog="snapshot-key">
+  <form class="modal-card" data-snapshot-key-form novalidate>
+    <span class="modal-icon commit-icon"><svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="8" cy="15" r="3"/><path d="m10.5 12.5 8-8 2 2-2 2 1.5 1.5-2 2-1.5-1.5-4 4"/></svg></span>
+    <p class="eyebrow">ENCRYPTED SNAPSHOT</p>
+    <h2>Unlock the repository</h2>
+    <p class="modal-copy">Enter the 64-character hexadecimal key shared by the repository owner. It is used in this browser session and is never saved.</p>
+    <label for="snapshot-encryption-key">Snapshot key</label>
+    <input id="snapshot-encryption-key" name="key" data-encryption-key type="password" required pattern="[0-9a-fA-F]{64}" autocomplete="off" autocapitalize="off" spellcheck="false" placeholder="64 hexadecimal characters" aria-describedby="snapshot-key-error" />
+    <p id="snapshot-key-error" class="form-validation-error" data-snapshot-key-error role="alert" aria-live="assertive" hidden></p>
+    <button class="button button-primary modal-button" type="submit" data-snapshot-key-submit>Unlock repository</button>
+  </form>
+</dialog>
 <dialog class="modal" data-dialog="commit">
 	<form class="modal-card" data-commit-form novalidate>
 		<button class="modal-close" type="button" aria-label="Close dialog" data-close>×</button>

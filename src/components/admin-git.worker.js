@@ -16,6 +16,10 @@ const fs = new LightningFS();
 const pfs = fs.promises;
 const legacyFs = new LightningFS();
 const legacyPfs = legacyFs.promises;
+const ENCRYPTED_ARCHIVE_MAGIC = new TextEncoder().encode('ASTRAEUS-ENC');
+const ENCRYPTED_ARCHIVE_VERSION = 1;
+const SNAPSHOT_KEY_REQUIRED = 'SNAPSHOT_ENCRYPTION_KEY_REQUIRED';
+const SNAPSHOT_KEY_INVALID = 'SNAPSHOT_ENCRYPTION_KEY_INVALID';
 let initialized;
 let snapshot;
 let publishedSnapshot = null;
@@ -65,7 +69,61 @@ function validateSnapshotMetadata(metadata, label) {
   if (!['none', 'aes-256-gcm'].includes(archiveEncryption)) {
     throw new Error(`The ${label} snapshot metadata has an unsupported archive encryption mode.`);
   }
+  if (archiveEncryption === 'aes-256-gcm' && !/^[A-Za-z0-9+/]{16}$/.test(metadata.archiveIv || '')) {
+    throw new Error(`The ${label} snapshot metadata is missing a valid AES-GCM IV.`);
+  }
+  if (archiveEncryption === 'none' && metadata.archiveIv !== undefined) {
+    throw new Error(`The ${label} plaintext snapshot must not include an encryption IV.`);
+  }
   return { ...metadata, archiveEncryption };
+}
+
+function bytesToBase64(bytes) {
+  let binary = '';
+  for (const byte of bytes) binary += String.fromCharCode(byte);
+  return btoa(binary);
+}
+
+function hasEncryptedArchiveHeader(bytes) {
+  return bytes.length >= ENCRYPTED_ARCHIVE_MAGIC.length
+    && ENCRYPTED_ARCHIVE_MAGIC.every((byte, index) => bytes[index] === byte);
+}
+
+async function decryptSnapshotArchive(bytes, keyHex, expectedMetadata) {
+  if (!hasEncryptedArchiveHeader(bytes)) {
+    if (expectedMetadata?.archiveEncryption === 'aes-256-gcm') {
+      throw new Error('The published metadata says this snapshot is encrypted, but the ZIP is plaintext.');
+    }
+    return { bytes, archiveIv: null };
+  }
+  const ivStart = ENCRYPTED_ARCHIVE_MAGIC.length + 1;
+  const payloadStart = ivStart + 12;
+  if (bytes.length < payloadStart + 16 || bytes[ENCRYPTED_ARCHIVE_MAGIC.length] !== ENCRYPTED_ARCHIVE_VERSION) {
+    throw new Error('The encrypted repository snapshot has an invalid or unsupported envelope.');
+  }
+  const iv = bytes.slice(ivStart, payloadStart);
+  const archiveIv = bytesToBase64(iv);
+  if (expectedMetadata && (expectedMetadata.archiveEncryption !== 'aes-256-gcm' || expectedMetadata.archiveIv !== archiveIv)) {
+    throw new Error('The encrypted repository ZIP does not match the published snapshot metadata.');
+  }
+  if (!keyHex) throw new Error(SNAPSHOT_KEY_REQUIRED);
+  if (!/^[0-9a-f]{64}$/i.test(keyHex)) throw new Error(SNAPSHOT_KEY_INVALID);
+
+  const rawKey = new Uint8Array(32);
+  for (let index = 0; index < rawKey.length; index++) {
+    rawKey[index] = Number.parseInt(keyHex.slice(index * 2, index * 2 + 2), 16);
+  }
+  const key = await self.crypto.subtle.importKey('raw', rawKey, { name: 'AES-GCM' }, false, ['decrypt']);
+  try {
+    const plaintext = await self.crypto.subtle.decrypt(
+      { name: 'AES-GCM', iv, tagLength: 128 },
+      key,
+      bytes.subarray(payloadStart),
+    );
+    return { bytes: new Uint8Array(plaintext), archiveIv };
+  } catch {
+    throw new Error(SNAPSHOT_KEY_INVALID);
+  }
 }
 
 async function fetchPublishedSnapshot(baseUrl) {
@@ -78,7 +136,7 @@ async function fetchPublishedSnapshot(baseUrl) {
   return validateSnapshotMetadata(await response.json(), 'published');
 }
 
-async function fetchPublishedArchive(baseUrl) {
+async function fetchPublishedArchive(baseUrl, encryptionKeyHex = '') {
   const published = await fetchPublishedSnapshot(baseUrl);
   const archiveUrl = new URL('admin/base-git.zip', new URL(baseUrl, self.location.origin));
   let response;
@@ -86,8 +144,10 @@ async function fetchPublishedArchive(baseUrl) {
     throw new Error('Could not download the current server repository ZIP. Check the connection and try again.');
   }
   if (!response.ok) throw new Error(`Could not load the server repository ZIP (${response.status}).`);
+  const encryptedBytes = new Uint8Array(await response.arrayBuffer());
+  const decoded = await decryptSnapshotArchive(encryptedBytes, encryptionKeyHex, published);
   let archive;
-  try { archive = unzipSync(new Uint8Array(await response.arrayBuffer())); } catch {
+  try { archive = unzipSync(decoded.bytes); } catch {
     throw new Error('The server repository ZIP is invalid or could not be unpacked.');
   }
   const metadataBytes = archive['snapshot.json'];
@@ -97,7 +157,10 @@ async function fetchPublishedArchive(baseUrl) {
     throw new Error('The repository ZIP snapshot metadata is invalid.');
   }
   const metadata = validateSnapshotMetadata(parsedMetadata, 'repository ZIP');
-  if (metadata.baseSha !== published.baseSha || metadata.branch !== published.branch || metadata.archiveEncryption !== published.archiveEncryption) {
+  if (metadata.baseSha !== published.baseSha || metadata.branch !== published.branch
+    || metadata.archiveEncryption !== published.archiveEncryption
+    || metadata.archiveIv !== published.archiveIv
+    || metadata.archiveIv !== (decoded.archiveIv || undefined)) {
     throw new Error('The repository ZIP does not match the current published snapshot metadata. Retry after the deployment finishes.');
   }
   return { published, archive, metadata };
@@ -215,7 +278,7 @@ async function comparePublishedSnapshot(baseUrl) {
   publishedSnapshot = validateSnapshotMetadata(await response.json(), 'published');
 }
 
-async function ensureInitialized(baseUrl) {
+async function ensureInitialized(baseUrl, encryptionKeyHex = '') {
   if (initialized) return initialized;
   initialized = (async () => {
     await fs.init(FS_NAME);
@@ -260,14 +323,20 @@ async function ensureInitialized(baseUrl) {
     const archiveUrl = new URL('admin/base-git.zip', new URL(baseUrl, self.location.origin));
     const response = await fetch(archiveUrl, { cache: 'no-store' });
     if (!response.ok) throw new Error(`Could not load the repository snapshot (${response.status}).`);
+    const encryptedBytes = new Uint8Array(await response.arrayBuffer());
+    const decoded = await decryptSnapshotArchive(encryptedBytes, encryptionKeyHex, publishedSnapshot);
     let archive;
-    try { archive = unzipSync(new Uint8Array(await response.arrayBuffer())); } catch {
+    try { archive = unzipSync(decoded.bytes); } catch {
       throw new Error('The repository snapshot ZIP is invalid or could not be unpacked.');
     }
     const metadataBytes = archive['snapshot.json'];
     if (!metadataBytes) throw new Error('The repository archive is missing snapshot.json.');
     const metadata = validateSnapshotMetadata(JSON.parse(new TextDecoder().decode(metadataBytes)), 'repository archive');
-    if (publishedSnapshot && (metadata.baseSha !== publishedSnapshot.baseSha || metadata.branch !== publishedSnapshot.branch || metadata.archiveEncryption !== publishedSnapshot.archiveEncryption)) {
+    if (metadata.archiveIv !== (decoded.archiveIv || undefined)) {
+      throw new Error('The decrypted repository ZIP metadata does not match its encrypted archive header.');
+    }
+    if (publishedSnapshot && (metadata.baseSha !== publishedSnapshot.baseSha || metadata.branch !== publishedSnapshot.branch
+      || metadata.archiveEncryption !== publishedSnapshot.archiveEncryption || metadata.archiveIv !== publishedSnapshot.archiveIv)) {
       throw new Error('The repository ZIP does not match the published snapshot metadata. Reload and try again.');
     }
     await materializeSnapshot(REPO_DIR, archive, metadata);
@@ -801,7 +870,7 @@ async function resetPublishedSnapshot(payload) {
   let installedSnapshot = false;
   try {
     await removeTree(RESET_STAGING_DIR);
-    const { published, archive, metadata } = await fetchPublishedArchive(payload.baseUrl);
+    const { published, archive, metadata } = await fetchPublishedArchive(payload.baseUrl, payload.encryptionKeyHex);
     await materializeSnapshot(RESET_STAGING_DIR, archive, metadata);
     await pfs.flush();
     if (await pathExists(RESET_BACKUP_DIR)) await removeTree(RESET_BACKUP_DIR);
@@ -887,10 +956,10 @@ async function exportRepository() {
 }
 
 async function handle(type, payload) {
-  if (type !== 'init' && type !== 'reset-published') await ensureInitialized(payload.baseUrl);
+  if (type !== 'init' && type !== 'reset-published') await ensureInitialized(payload.baseUrl, payload.encryptionKeyHex);
   switch (type) {
     case 'init':
-      await ensureInitialized(payload.baseUrl);
+      await ensureInitialized(payload.baseUrl, payload.encryptionKeyHex);
       return { metadata: await metadata(), files: await listFiles(), status: await status(), log: await log() };
     case 'list': return listFiles();
     case 'read': return readFile(payload.path);
