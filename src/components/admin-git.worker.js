@@ -773,7 +773,7 @@ async function githubPush(payload) {
 
 
 async function resetPublishedSnapshot(payload) {
-  if (payload.confirmation !== 'RESET') throw new Error('Type RESET in the confirmation field before replacing this browser workspace.');
+  if (payload.confirmation !== true) throw new Error('Confirm that you want to replace this browser workspace.');
   await fs.init(FS_NAME);
 
   const previousSnapshot = snapshot;

@@ -12,6 +12,8 @@ const toast = document.querySelector('[data-toast]');
 const worker = new Worker(new URL('./admin-git.worker.js', import.meta.url), { type: 'module' });
 const pending = new Map();
 const BASE_URL = import.meta.env.BASE_URL.endsWith('/') ? import.meta.env.BASE_URL : `${import.meta.env.BASE_URL}/`;
+const COMMIT_AUTHOR_COOKIE = 'astraeuscms_commit_author';
+const COMMIT_AUTHOR_COOKIE_MAX_AGE = 60 * 60 * 24 * 365;
 let requestId = 0;
 let toastTimer;
 let files = [];
@@ -664,8 +666,42 @@ function categoryFolder() {
   return category === 'menus' ? 'src/data/menus/' : category === 'blog' ? 'src/content/blog/' : 'src/content/pages/';
 }
 
+function readRememberedCommitAuthor() {
+  const prefix = `${COMMIT_AUTHOR_COOKIE}=`;
+  const cookie = document.cookie.split(';').map((part) => part.trim()).find((part) => part.startsWith(prefix));
+  if (!cookie) return null;
+  try {
+    const author = JSON.parse(decodeURIComponent(cookie.slice(prefix.length)));
+    if (typeof author?.name !== 'string' || typeof author?.email !== 'string') return null;
+    return author;
+  } catch {
+    return null;
+  }
+}
+
+function rememberCommitAuthor(name, email) {
+  const value = encodeURIComponent(JSON.stringify({ name: name.trim(), email: email.trim() }));
+  const secure = window.location.protocol === 'https:' ? '; Secure' : '';
+  try {
+    document.cookie = `${COMMIT_AUTHOR_COOKIE}=${value}; Path=${BASE_URL}; Max-Age=${COMMIT_AUTHOR_COOKIE_MAX_AGE}; SameSite=Lax${secure}`;
+  } catch {
+    return;
+  }
+}
+
+function prefillCommitAuthor() {
+  const author = readRememberedCommitAuthor();
+  const form = document.querySelector('[data-commit-form]');
+  if (!author || !(form instanceof HTMLFormElement)) return;
+  const nameInput = form.elements.namedItem('authorName');
+  const emailInput = form.elements.namedItem('authorEmail');
+  if (nameInput instanceof HTMLInputElement && !nameInput.value) nameInput.value = author.name;
+  if (emailInput instanceof HTMLInputElement && !emailInput.value) emailInput.value = author.email;
+}
+
 function openDialog(name) {
   const dialog = document.querySelector(`[data-dialog="${name}"]`);
+  if (name === 'commit') prefillCommitAuthor();
   if (dialog instanceof HTMLDialogElement && !dialog.open) dialog.showModal();
 }
 
@@ -700,7 +736,7 @@ function openPublishedResetDialog() {
   const confirmationInput = document.querySelector('#published-reset-confirmation');
   const status = document.querySelector('[data-published-reset-status]');
   const validation = document.querySelector('[data-published-reset-validation]');
-  if (confirmationInput instanceof HTMLInputElement) confirmationInput.value = '';
+  if (confirmationInput instanceof HTMLInputElement) confirmationInput.checked = false;
   if (status) {
     status.textContent = '';
     status.hidden = true;
@@ -715,7 +751,7 @@ function openPublishedResetDialog() {
   confirmationInput?.focus();
 }
 
-document.querySelector('#published-reset-confirmation')?.addEventListener('input', () => {
+document.querySelector('#published-reset-confirmation')?.addEventListener('change', () => {
   const validation = document.querySelector('[data-published-reset-validation]');
   if (validation) {
     validation.textContent = '';
@@ -955,11 +991,9 @@ document.querySelector('[data-published-reset-form]')?.addEventListener('submit'
   const status = form.querySelector('[data-published-reset-status]');
   const submitButton = form.querySelector('[data-published-reset-submit]');
   if (!(confirmationInput instanceof HTMLInputElement)) return;
-  if (confirmationInput.value !== 'RESET') {
+  if (!confirmationInput.checked) {
     if (validation) {
-      validation.textContent = confirmationInput.value.trim() === 'RESET'
-        ? 'Remove leading or trailing whitespace; enter RESET exactly.'
-        : 'Type RESET exactly to confirm.';
+      validation.textContent = 'Check the box to confirm replacing this browser workspace.';
       validation.hidden = false;
     }
     confirmationInput.focus();
@@ -970,7 +1004,6 @@ document.querySelector('[data-published-reset-form]')?.addEventListener('submit'
     validation.hidden = true;
   }
   if (!form.reportValidity()) return;
-  const confirmation = confirmationInput.value;
   resetInProgress = true;
   if (submitButton instanceof HTMLButtonElement) submitButton.disabled = true;
   if (status) {
@@ -979,7 +1012,7 @@ document.querySelector('[data-published-reset-form]')?.addEventListener('submit'
   }
   let resetComplete = false;
   try {
-    const result = await callWorker('reset-published', { confirmation });
+    const result = await callWorker('reset-published', { confirmation: confirmationInput.checked });
     resetComplete = true;
     selectedPath = '';
     await clearSelectedFile();
@@ -1043,6 +1076,8 @@ document.querySelector('[data-commit-form]')?.addEventListener('submit', async (
   }
   if (!form.reportValidity()) return;
   const data = new FormData(form);
+  const authorName = String(data.get('authorName') || '');
+  const authorEmail = String(data.get('authorEmail') || '');
   try {
     syncMarkdownEditorToSource();
     if (editor && isTextFile && editor.value !== savedText) {
@@ -1052,9 +1087,10 @@ document.querySelector('[data-commit-form]')?.addEventListener('submit', async (
     }
     const commit = await callWorker('commit', {
       message: String(data.get('message') || ''),
-      authorName: String(data.get('authorName') || ''),
-      authorEmail: String(data.get('authorEmail') || ''),
+      authorName,
+      authorEmail,
     });
+    rememberCommitAuthor(authorName, authorEmail);
     closeDialog('commit');
     form.reset();
     await refreshRepository();

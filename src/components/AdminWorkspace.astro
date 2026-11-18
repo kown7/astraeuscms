@@ -64,8 +64,7 @@ const baseUrl = import.meta.env.BASE_URL.endsWith('/') ? import.meta.env.BASE_UR
 		<p class="modal-copy">This downloads the Git repository ZIP embedded in the current server deployment, validates its branch and commit, then replaces this browser’s repository. It does not fetch from GitHub.</p>
 		<div class="export-facts"><div><span>CURRENT BRANCH</span><strong data-reset-branch>—</strong></div><div><span>CURRENT HEAD</span><strong><code data-reset-head>—</code></strong></div><div><span>RESTORE TARGET</span><strong>Current deployment ZIP</strong></div></div>
 		<p class="modal-copy">Reset discards all browser-local edits, uncommitted changes, local commits, and unsaved editor text. Export the repository ZIP first if you need to keep any of that work.</p>
-		<label for="published-reset-confirmation">Type RESET to confirm</label>
-		<input id="published-reset-confirmation" name="confirmation" type="text" required pattern="RESET" autocomplete="off" autocapitalize="off" spellcheck="false" placeholder="RESET" title="Enter RESET exactly to discard the browser workspace" aria-describedby="published-reset-validation" />
+    <label class="reset-confirmation"><input id="published-reset-confirmation" name="confirmation" type="checkbox" required aria-describedby="published-reset-validation" /><span>I understand this will replace all browser-local edits, files, and commits.</span></label>
 		<p id="published-reset-validation" class="form-validation-error" data-published-reset-validation role="alert" aria-live="assertive" hidden></p>
 		<p data-published-reset-status role="alert" aria-live="assertive" hidden></p>
 		<button class="button button-primary modal-button" type="submit" data-published-reset-submit>Reset to published snapshot</button>
@@ -87,6 +86,7 @@ const baseUrl = import.meta.env.BASE_URL.endsWith('/') ? import.meta.env.BASE_UR
 		<input id="commit-author-name" name="authorName" required placeholder="Your name" />
 		<label for="commit-author-email">Author email</label>
 		<input id="commit-author-email" name="authorEmail" type="email" required placeholder="you@example.com" aria-describedby="commit-validation" />
+    <p class="modal-copy">Your author name and email are remembered in a cookie on this site.</p>
 		<p id="commit-validation" class="form-validation-error" data-commit-validation role="alert" aria-live="assertive" hidden></p>
 		<button class="button button-primary modal-button" type="submit">Create local commit</button>
 	</form>
@@ -113,5 +113,7 @@ const baseUrl = import.meta.env.BASE_URL.endsWith('/') ? import.meta.env.BASE_UR
 	[data-new-file-form] textarea { width: 100%; min-height: 130px; padding: 9px; border: 1px solid #e2e5eb; border-radius: 6px; color: #4b515d; resize: vertical; font: 9px/1.5 ui-monospace, monospace; }
 	[data-recent-files] .recent-file { border-top: 1px solid #eff0f3; }
 	@media (max-width: 620px) { .editor-save-actions { flex-wrap: wrap; } }
+    .reset-confirmation { margin: 12px 0 !important; display: flex !important; align-items: flex-start; gap: 8px; color: #626875 !important; font-size: 9px !important; font-weight: 500 !important; line-height: 1.45; cursor: pointer; }
+    .reset-confirmation input { width: 14px !important; height: 14px !important; flex: none; margin: 0; padding: 0; accent-color: #7169d9; }
 	button[data-github-push-action][hidden] { display: none; }
 </style>

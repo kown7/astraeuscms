@@ -18,7 +18,7 @@ The project began as an Astro 7 starter with one homepage and no CMS routes or c
 - **No Git transport clone/fetch/pull.** `npm run build` packages only the `.git` directory from the committed local repository; it makes no network Git requests and requires a clean source working tree (generated output is excluded).
 - **Browser-local checkout and Git are in scope.** On first initialization, the browser opens the embedded `.git` repository and checks out the recorded branch and `HEAD`; it may create multiple local commits.
 - **Explicit GitHub REST push.** The owner may push those commits from `/admin/` to the GitHub `origin` branch using a fine-grained PAT; the export-to-console workflow remains available.
-- **Reset to the published snapshot.** The owner may explicitly replace browser-local state with the Git repository ZIP embedded in the current deployment. The reset is destructive, requires typed confirmation, and does not contact GitHub.
+- **Reset to the published snapshot.** The owner may explicitly replace browser-local state with the Git repository ZIP embedded in the current deployment. The reset is destructive, requires checking a confirmation box, and does not contact GitHub.
 - **One branch in the MVP.** Use the branch checked out at build time. No branch switching or Git transport fetch/pull.
 - **The `/admin/` namespace is reserved** for editing. Site content must not claim that route.
 - **Full repository editing.** The Files view covers repository text and binary files; content-specific views are shortcuts, not restrictions. Text remains directly editable; common images are previewable and replaceable. No WYSIWYG editor in the MVP.
@@ -36,7 +36,7 @@ Single site owner; one browser editing session at a time. No accounts, teams, ro
 6. To publish directly, the owner explicitly enters a GitHub PAT with `Contents: write` and pushes local commits through the GitHub REST API.
 7. Alternatively, the owner downloads the complete working repository, verifies `git status` and `git log`, and pushes from the console.
 
-Reset requires typed confirmation; download or validation failure preserves the current workspace. Push fails safely on dirty/divergent history and never force-updates the branch.
+Reset requires checking a confirmation box; download or validation failure preserves the current workspace. Push fails safely on dirty/divergent history and never force-updates the branch.
 
 ## 5. Content model
 
@@ -66,7 +66,7 @@ The MVP MUST list and edit existing menu, blog, and generic-content records and 
 - **REQ-07:** The built site MUST contain a static admin route at `/admin/`; `/admin` SHOULD resolve to that canonical route on supported hosts.
 - **REQ-08:** The admin UI MUST provide Menus, Blog posts, Content, and Files views backed by the embedded repository. Files MUST expose all checked-out repository paths, not only CMS content files.
 - **REQ-09:** The editor MUST edit raw YAML menus, Markdown/frontmatter, and other text files. It MUST support uploading/replacing and downloading binary assets and previewing common image formats.
-- **REQ-10:** The user MUST be able to create, rename/move, and explicitly delete repository files; destructive operations MUST require confirmation. Saving MUST update the browser’s local working tree. The user MUST be able to stage intended changes and create local commits with a message and author identity.
+- **REQ-10:** The user MUST be able to create, rename/move, and explicitly delete repository files; destructive operations MUST require confirmation. Saving MUST update the browser’s local working tree. The user MUST be able to stage intended changes and create local commits with a message and author identity. After a successful commit, the admin MUST remember the author name and email in a site-scoped cookie and prefill them for later commits; the cookie MUST NOT contain a PAT.
 - **REQ-11:** Browser repository state, including local commits, SHOULD survive reload using IndexedDB-backed storage. The UI MUST show the current branch and changed-file status, MUST NOT re-checkout over a saved working tree, and MUST warn if the deployed snapshot base differs from the persisted workspace.
 - **REQ-12:** Git operations MUST NOT use Git-protocol fetch or pull. The browser MAY call GitHub REST only for explicit push actions, using a user-supplied PAT and no other remote host.
 
@@ -96,7 +96,7 @@ The `.git` snapshot is a public static asset. It includes Git history and refs; 
 - **REQ-24:** A GitHub push MUST create the missing local commit chain through GitHub’s Git Data REST endpoints, then update the configured branch with `force: false`.
 - **REQ-25:** The push UI MUST request a repository-scoped fine-grained PAT with `Contents: write`; tokens MUST be held only in memory for the operation and never logged, exported, or persisted. The UI MUST warn that page scripts can access a token while it is entered.
 - **REQ-26:** A GitHub push MUST stop without updating the branch ref if the remote branch is not an ancestor of local `HEAD` or GitHub object hashes do not match the local commits.
-- **REQ-27:** “Reset to snapshot” MUST fetch the current deployment’s `admin/snapshot.json` and `admin/base-git.zip` with cache bypass, validate that the archive metadata matches the sidecar, and materialize the snapshot in staging before replacing the browser repository. It MUST require typed confirmation and replace local edits, uncommitted changes, and local commits only after validation succeeds. Fetch, archive, or checkout failures MUST leave the active workspace unchanged; incomplete cleanup MUST be surfaced. Reset MUST NOT contact GitHub.
+- **REQ-27:** “Reset to snapshot” MUST fetch the current deployment’s `admin/snapshot.json` and `admin/base-git.zip` with cache bypass, validate that the archive metadata matches the sidecar, and materialize the snapshot in staging before replacing the browser repository. It MUST require a checked confirmation box and replace local edits, uncommitted changes, and local commits only after validation succeeds. Fetch, archive, or checkout failures MUST leave the active workspace unchanged; incomplete cleanup MUST be surfaced. Reset MUST NOT contact GitHub.
 
 ## 8. Out of scope for the MVP
 
@@ -114,5 +114,5 @@ The `.git` snapshot is a public static asset. It includes Git history and refs; 
 5. Downloading and unpacking the export yields a valid Git working copy whose log contains those browser-created commits and whose status reflects the current working tree.
 6. The owner can inspect and push the export with native Git, or explicitly push local commits through GitHub REST; neither workflow pushes automatically.
 7. With a valid GitHub PAT and a fast-forwardable branch, the explicit REST push publishes the local commit chain; a divergent branch is rejected without force.
-8. The admin can explicitly reset to the current deployment’s embedded repository ZIP; reset requires typed confirmation, replaces browser-local edits and commits, persists across reloads, and leaves the active workspace unchanged if the ZIP cannot be fetched or validated.
+8. The admin can explicitly reset to the current deployment’s embedded repository ZIP; reset requires checking a confirmation box, replaces browser-local edits and commits, persists across reloads, and leaves the active workspace unchanged if the ZIP cannot be fetched or validated.
 9. A stale base or unsupported repository layout is surfaced rather than silently overwritten or partially exported.
