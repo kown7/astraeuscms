@@ -422,10 +422,14 @@ async function metadata() {
     }
   }
   const origin = await git.getConfig({ fs, dir: REPO_DIR, path: 'remote.origin.url' });
+  const upstreamSnapshot = publishedSnapshot || snapshot;
   return {
     ...snapshot,
     branch: branch || snapshot.branch,
     headSha,
+    upstreamSha: upstreamSnapshot.baseSha,
+    upstreamBranch: upstreamSnapshot.branch,
+    upstreamBuiltAt: upstreamSnapshot.builtAt,
     staleBase: Boolean(isStale),
     githubTarget: parseGitHubOrigin(origin),
   };

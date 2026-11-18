@@ -14,6 +14,7 @@ const pending = new Map();
 const BASE_URL = import.meta.env.BASE_URL.endsWith('/') ? import.meta.env.BASE_URL : `${import.meta.env.BASE_URL}/`;
 const COMMIT_AUTHOR_COOKIE = 'astraeuscms_commit_author';
 const COMMIT_AUTHOR_COOKIE_MAX_AGE = 60 * 60 * 24 * 365;
+const UPSTREAM_STATE_STORAGE_KEY = 'astraeuscms_last_known_upstream';
 let requestId = 0;
 let toastTimer;
 let files = [];
@@ -23,7 +24,7 @@ let repository = null;
 let currentView = 'overview';
 let category = 'menus';
 let selectedPath = '';
-let savedText = '';
+let editorBaselineText = '';
 let isTextFile = false;
 let isMarkdownFile = false;
 let markdownEditor = null;
@@ -112,6 +113,73 @@ function statusText(path) {
   return status === 'Tracked' ? 'Tracked in HEAD' : status;
 }
 
+function knownUpstreamState() {
+  const baseline = {
+    sha: repository?.upstreamSha || repository?.baseSha || '',
+    branch: repository?.upstreamBranch || repository?.branch || '',
+    builtAt: Date.parse(repository?.upstreamBuiltAt || repository?.builtAt || '') || 0,
+  };
+  const target = repository?.githubTarget;
+  if (!target?.owner || !target.repo || !baseline.sha || !baseline.branch) {
+    return { ...baseline, known: false };
+  }
+  try {
+    const stored = JSON.parse(window.localStorage.getItem(UPSTREAM_STATE_STORAGE_KEY) || 'null');
+    if (stored?.owner === target.owner && stored.repo === target.repo && stored.branch === repository.branch
+      && /^[0-9a-f]{40}$/i.test(stored.sha) && Number.isFinite(stored.checkedAt) && stored.checkedAt >= baseline.builtAt) {
+      return { sha: stored.sha, branch: stored.branch, known: true };
+    }
+  } catch {}
+  return { ...baseline, known: true };
+}
+
+function hasUncommittedChanges() {
+  const changedFiles = statuses.some(({ path }) => statusFor(path) !== 'Tracked');
+  const unsavedEditorText = Boolean(editor && selectedPath && isTextFile && editor.value !== editorBaselineText);
+  return changedFiles || unsavedEditorText;
+}
+
+function updateSidebarStatus() {
+  const indicator = document.querySelector('[data-workspace-indicator]');
+  const status = document.querySelector('[data-sidebar-state]');
+  if (!indicator || !status) return;
+  if (!repository) {
+    indicator.dataset.state = 'unknown';
+    return;
+  }
+  const uncommitted = hasUncommittedChanges();
+  const upstream = knownUpstreamState();
+  const outOfSync = upstream.known
+    && (repository.branch !== upstream.branch || repository.headSha !== upstream.sha);
+  if (uncommitted) {
+    indicator.dataset.state = 'dirty';
+    status.textContent = outOfSync ? 'Uncommitted changes · upstream differs' : 'Uncommitted changes';
+  } else if (!upstream.known) {
+    indicator.dataset.state = 'unknown';
+    status.textContent = 'Upstream status unknown';
+  } else if (outOfSync) {
+    indicator.dataset.state = 'out-of-sync';
+    status.textContent = 'Not in sync with upstream';
+  } else {
+    indicator.dataset.state = 'synced';
+    status.textContent = 'In sync with upstream';
+  }
+}
+
+function rememberPushedUpstream(result) {
+  if (!result?.owner || !result.repo || !result.branch || !/^[0-9a-f]{40}$/i.test(result.remoteHead || '')) return;
+  try {
+    window.localStorage.setItem(UPSTREAM_STATE_STORAGE_KEY, JSON.stringify({
+      owner: result.owner,
+      repo: result.repo,
+      branch: result.branch,
+      sha: result.remoteHead,
+      checkedAt: Date.now(),
+    }));
+  } catch {}
+  updateSidebarStatus();
+}
+
 function markFor(path) {
   if (/\.ya?ml$/i.test(path)) return ['Y', 'yaml-mark'];
   if (/\.(md|mdx|txt|astro|html|css|js|mjs|ts|json|toml|xml|svg)$/i.test(path)) return ['T', 'markdown-mark'];
@@ -127,12 +195,12 @@ function updateLineNumbers() {
 
 function currentStatusLine() {
   if (!selectedPath) return 'Select a repository file';
-  if (editor && isTextFile && editor.value !== savedText) return 'Unsaved editor changes';
+  if (editor && isTextFile && editor.value !== editorBaselineText) return 'Unsaved editor changes';
   return statusText(selectedPath);
 }
 
 function updateEditorState() {
-  const changed = Boolean(editor && isTextFile && selectedPath && editor.value !== savedText);
+  const changed = Boolean(editor && isTextFile && selectedPath && editor.value !== editorBaselineText);
   const dot = document.querySelector('[data-dirty-indicator]');
   const status = document.querySelector('[data-editor-status]');
   const saveButton = document.querySelector('[data-action="save"]');
@@ -145,6 +213,7 @@ function updateEditorState() {
   document.querySelectorAll('[data-action="rename"], [data-action="delete"]').forEach((button) => { button.disabled = !selectedPath; });
   const downloadButton = document.querySelector('[data-action="download-file"]');
   if (downloadButton) downloadButton.disabled = !selectedPath || isTextFile;
+  updateSidebarStatus();
 }
 
 function splitMarkdownFrontmatter(source) {
@@ -322,7 +391,7 @@ async function clearSelectedFile() {
   await disposeMarkdownEditor();
   revokeImageUrl();
   selectedPath = '';
-  savedText = '';
+  editorBaselineText = '';
   isTextFile = false;
   isMarkdownFile = false;
   markdownFrontmatter = '';
@@ -347,7 +416,7 @@ async function clearSelectedFile() {
 
 async function mayLeaveCurrentFile() {
   syncMarkdownEditorToSource();
-  if (!selectedPath || !editor || !isTextFile || editor.value === savedText) return true;
+  if (!selectedPath || !editor || !isTextFile || editor.value === editorBaselineText) return true;
   if (!window.confirm('Save your unsaved editor changes before continuing? Choose Cancel to stay on this file.')) return false;
   await saveSelected();
   return true;
@@ -384,7 +453,7 @@ async function openFile(path) {
       if (markdownPanel) markdownPanel.hidden = true;
       document.querySelector('[data-binary-panel]').hidden = true;
       if (editor) { editor.disabled = false; editor.value = result.text; }
-      savedText = result.text;
+      editorBaselineText = editor?.value || '';
       if (isMarkdownFile) {
         const parsed = splitMarkdownFrontmatter(result.text);
         if (parsed.malformed) {
@@ -409,6 +478,7 @@ async function openFile(path) {
       }
     } else {
       if (editor) { editor.value = ''; editor.disabled = true; }
+      editorBaselineText = '';
       if (textPanel) textPanel.hidden = true;
       if (markdownPanel) markdownPanel.hidden = true;
       document.querySelector('[data-binary-panel]').hidden = false;
@@ -436,9 +506,9 @@ async function openFile(path) {
 
 async function saveSelected() {
   syncMarkdownEditorToSource();
-  if (!selectedPath || !editor || !isTextFile) return;
+  if (!selectedPath || !editor || !isTextFile || editor.value === editorBaselineText) return;
   await callWorker('write', { path: selectedPath, contents: editor.value });
-  savedText = editor.value;
+  editorBaselineText = editor.value;
   markdownVisualEdited = false;
   await refreshRepository();
   updateEditorState();
@@ -509,7 +579,7 @@ function renderMetadata() {
   setText('[data-push-command]', `git push origin ${branch || 'HEAD'}`);
   const staleWarning = document.querySelector('[data-stale-warning]');
   if (staleWarning) staleWarning.hidden = !repository.staleBase;
-  setText('[data-sidebar-state]', headSha && baseSha && headSha !== baseSha ? `HEAD ${headSha.slice(0, 7)}` : 'Clean at build time');
+  updateSidebarStatus();
 }
 
 function renderCommits() {
@@ -786,10 +856,10 @@ function handleAction(action) {
 async function exportRepository() {
   try {
     syncMarkdownEditorToSource();
-    if (editor && selectedPath && isTextFile && editor.value !== savedText) {
+    if (editor && selectedPath && isTextFile && editor.value !== editorBaselineText) {
       if (!window.confirm('Save unsaved editor changes before exporting?')) return;
       await callWorker('write', { path: selectedPath, contents: editor.value });
-      savedText = editor.value;
+      editorBaselineText = editor.value;
       markdownVisualEdited = false;
       await refreshRepository();
     }
@@ -959,6 +1029,7 @@ document.querySelector('[data-github-push-form]')?.addEventListener('submit', as
   }
   try {
     const result = await callWorker('github-push', { token });
+    rememberPushedUpstream(result);
     const branch = typeof result?.branch === 'string' ? result.branch : repository?.branch || 'current branch';
     const pushedCount = Number.isSafeInteger(result?.pushedCount) && result.pushedCount >= 0 ? result.pushedCount : 0;
     const message = result?.upToDate
@@ -1080,9 +1151,9 @@ document.querySelector('[data-commit-form]')?.addEventListener('submit', async (
   const authorEmail = String(data.get('authorEmail') || '');
   try {
     syncMarkdownEditorToSource();
-    if (editor && isTextFile && editor.value !== savedText) {
+    if (editor && isTextFile && editor.value !== editorBaselineText) {
       await callWorker('write', { path: selectedPath, contents: editor.value });
-      savedText = editor.value;
+      editorBaselineText = editor.value;
       markdownVisualEdited = false;
     }
     const commit = await callWorker('commit', {
