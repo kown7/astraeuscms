@@ -1,4 +1,4 @@
-# Astro CMS design
+# AstraeusCMS design
 
 **Status:** Implementation complete; authenticated GitHub push requires a user PAT for end-to-end verification
 **Decision:** Embed a `.git`-only snapshot of the current local repository in the static build. The browser checks out `HEAD`, edits and commits locally, then either explicitly pushes local commits to GitHub via REST with a user PAT, resets to the snapshot in the current deployment, or downloads the full working repository for a console push.
@@ -35,7 +35,7 @@ Recommended build procedure:
 2. Package the repository’s `.git` directory as `public/admin/base-git.zip` with metadata (schema version, base SHA, branch, and build time). Write the same metadata to `public/admin/snapshot.json` so the browser can detect a newer base without downloading the archive. Do not copy the worktree into the initial ZIP.
 3. Ensure the snapshot is self-contained and supported by the browser Git library: include the object database, refs, `HEAD`, index, and repository config needed for local checkout and commits. Reject linked worktrees, object alternates, shallow history, submodules, Git LFS, SHA-256 object format, and other unsupported layouts rather than emit a partial repository.
 4. Require generated output (`dist/`), `.astro`, `node_modules`, `public/admin/base-git.zip`, and `public/admin/snapshot.json` to be ignored and untracked at `HEAD`; fail if they are tracked. Because the snapshot preserves full history, older commits may still contain such files.
-5. Astro copies both generated assets to `dist/admin/`. The default local build and the `/astrocms/` Pages build must reference them through the configured base path.
+5. Astro copies both generated assets to `dist/admin/`. The default local build and the `/astraeuscms/` Pages build must reference them through the configured base path.
 
 Use a small cross-platform ZIP library such as `fflate` for build-time packaging and browser-side extraction/repackaging. Since the initial archive preserves `.git` history, verify generated output is untracked at `HEAD`; do not claim to remove files from historical Git objects.
 
@@ -125,11 +125,11 @@ The initial `.git` archive is a public static asset and contains the included re
 
 ## 7. Static path behavior
 
-The default `npm run build` target is ignored `dist/`, served from its root; it must remain usable with `cd dist && python3 -m http.server`. Do not hard-code `/astrocms` into the default build.
+The default `npm run build` target is ignored `dist/`, served from its root; it must remain usable with `cd dist && python3 -m http.server`. Do not hard-code `/astraeuscms` into the default build.
 
-The GitHub Pages project site is hosted under `/astrocms/`, which normally requires Astro’s deployment `base` to be `/astrocms`. In Astro 7.4.8, tests of `base: './'` and `vite: { base: './' }` still emitted root-absolute `/_astro/...` URLs. Therefore do not assume one output is path-agnostic.
+The GitHub Pages project site is hosted under `/astraeuscms/`, which normally requires Astro’s deployment `base` to be `/astraeuscms`. In Astro 7.4.8, tests of `base: './'` and `vite: { base: './' }` still emitted root-absolute `/_astro/...` URLs. Therefore do not assume one output is path-agnostic.
 
-Use the same build command in GitHub Actions with `ASTRO_BASE=/astrocms`; upload `dist/` as the Pages artifact. Configure Pages to use GitHub Actions, and do not commit generated output to the source branch. Set checkout `fetch-depth: 0` so the embedded Git snapshot has the required history. Use `import.meta.env.BASE_URL` for authored public asset references.
+Use the same build command in GitHub Actions with `ASTRO_BASE=/astraeuscms`; upload `dist/` as the Pages artifact. Configure Pages to use GitHub Actions, and do not commit generated output to the source branch. Set checkout `fetch-depth: 0` so the embedded Git snapshot has the required history. Use `import.meta.env.BASE_URL` for authored public asset references.
 
 ## 8. Implementation order
 
@@ -137,7 +137,7 @@ Use the same build command in GitHub Actions with `ASTRO_BASE=/astrocms`; upload
 2. Define YAML menu data and Markdown collections; migrate menu rendering to read the YAML data.
 3. Add the build-time `.git`-only snapshot, clean-tree check, and browser-compatible repository validation.
 4. Add `/admin/` with browser checkout of `HEAD`, an isomorphic-git working tree, persistence, full-repository text editing/assets, local commits, explicit GitHub REST push, and reset to the deployed snapshot.
-5. Add full working-repository ZIP download and verify the downloaded repo with native Git; verify root and `/astrocms/` deployments.
+5. Add full working-repository ZIP download and verify the downloaded repo with native Git; verify root and `/astraeuscms/` deployments.
 
 ## 9. Deferred capabilities
 

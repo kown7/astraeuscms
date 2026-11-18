@@ -1,4 +1,4 @@
-# Astro CMS requirements
+# AstraeusCMS requirements
 
 **Status:** Implementation complete; authenticated GitHub push requires a user PAT for end-to-end verification
 **Product shape:** Static Astro site containing a build-time `.git` snapshot. The browser checks out `HEAD`, edits and commits locally, then downloads the full working repository for a console push.
@@ -80,7 +80,7 @@ The MVP MUST list and edit existing menu, blog, and generic-content records and 
 ### Static hosting and paths
 
 - **REQ-17:** The default `npm run build` output in `dist/` MUST work when served from that directory root, including `python3 -m http.server`.
-- **REQ-18:** The GitHub Pages project site at `/astrocms/` MUST render from the `dist/` artifact. The default local build MUST NOT be globally hard-coded to `/astrocms`.
+- **REQ-18:** The GitHub Pages project site at `/astraeuscms/` MUST render from the `dist/` artifact. The default local build MUST NOT be globally hard-coded to `/astraeuscms`.
 - **REQ-19:** The path behavior MUST be verified against generated HTML, CSS, JavaScript, and favicon URLs. If Astro cannot produce one path-independent artifact reliably, provide an explicit deploy-specific build profile rather than breaking the default local workflow.
 
 Generated `dist/` output MUST remain untracked. GitHub Actions deploys the `dist/` artifact; do not commit generated site output to the source repository.
@@ -109,7 +109,7 @@ The `.git` snapshot is a public static asset. It includes Git history and refs; 
 
 1. A clean `npm run build` produces the static site and a `.git`-only repository snapshot under `dist/` without network Git calls.
 2. Serving `dist/` with `python3 -m http.server` loads the site and `/admin/` with all required assets.
-3. The GitHub Pages build at `/astrocms/` loads the same admin UI and its assets; the default build remains root-servable.
+3. The GitHub Pages build at `/astraeuscms/` loads the same admin UI and its assets; the default build remains root-servable.
 4. On first initialization, the admin force-checks out the embedded branch at `HEAD`; it then lists and edits arbitrary repository text files, supports confirmed file creation/rename/move/delete and binary asset replacement/download, preserves edits across reloads, and creates multiple local commits.
 5. Downloading and unpacking the export yields a valid Git working copy whose log contains those browser-created commits and whose status reflects the current working tree.
 6. The owner can inspect and push the export with native Git, or explicitly push local commits through GitHub REST; neither workflow pushes automatically.

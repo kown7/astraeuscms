@@ -4,7 +4,9 @@ import { unzipSync, zipSync } from 'fflate';
 import { Buffer } from 'buffer';
 globalThis.Buffer = Buffer;
 
-const FS_NAME = 'astro-cms-admin-repository';
+const FS_NAME = 'AstraeusCMS-admin-repository';
+const LEGACY_FS_NAME = 'astro-cms-admin-repository';
+const MIGRATION_MARKER = '/.astraeuscms-legacy-migration';
 const REPO_DIR = '/repo';
 const WORKSPACE_DIR = '/workspace-meta';
 const READY_FILE = `${WORKSPACE_DIR}/initialized.json`;
@@ -12,6 +14,8 @@ const RESET_STAGING_DIR = '/repo-reset-staging';
 const RESET_BACKUP_DIR = '/repo-reset-backup';
 const fs = new LightningFS();
 const pfs = fs.promises;
+const legacyFs = new LightningFS();
+const legacyPfs = legacyFs.promises;
 let initialized;
 let snapshot;
 let publishedSnapshot = null;
@@ -139,6 +143,65 @@ async function removeTree(path) {
   }
 }
 
+async function copyLegacyPath(sourcePath, targetPath) {
+  const stat = await legacyPfs.lstat(sourcePath);
+  const mode = stat.mode & 0o777;
+  if (stat.isDirectory()) {
+    await pfs.mkdir(targetPath, { mode });
+    for (const name of await legacyPfs.readdir(sourcePath)) {
+      await copyLegacyPath(`${sourcePath}/${name}`, `${targetPath}/${name}`);
+    }
+    await pfs.chmod(targetPath, mode);
+  } else if (stat.isSymbolicLink()) {
+    await pfs.symlink(await legacyPfs.readlink(sourcePath), targetPath);
+  } else if (stat.isFile()) {
+    await pfs.writeFile(targetPath, await legacyPfs.readFile(sourcePath), { mode });
+  } else {
+    throw new Error(`Cannot migrate unsupported browser file: ${sourcePath}`);
+  }
+}
+
+async function recoverInterruptedMigration() {
+  const entries = await pfs.readdir('/');
+  if (!entries.includes(MIGRATION_MARKER.slice(1))) return;
+  for (const name of entries) await removeTree(`/${name}`);
+  await pfs.flush();
+}
+
+async function migrateLegacyWorkspace() {
+  await legacyFs.init(LEGACY_FS_NAME);
+  const legacyEntries = await legacyPfs.readdir('/');
+  let legacyReady;
+  try { legacyReady = await legacyPfs.readFile(READY_FILE, 'utf8'); } catch (error) {
+    if (error.code !== 'ENOENT') throw error;
+  }
+  if (legacyReady === undefined) {
+    let repoEntries = [];
+    try { repoEntries = await legacyPfs.readdir(REPO_DIR); } catch (error) {
+      if (error.code !== 'ENOENT') throw error;
+    }
+    if (repoEntries.length) {
+      throw new Error('An older AstraeusCMS browser workspace has repository files but no initialization marker. Its data is untouched; export it from the previous deployment before continuing.');
+    }
+    return false;
+  }
+  if ((await pfs.readdir('/')).length) {
+    throw new Error('AstraeusCMS found data in its new browser workspace and will not overwrite it during migration.');
+  }
+
+  await pfs.writeFile(MIGRATION_MARKER, 'in-progress', 'utf8');
+  await pfs.flush();
+  try {
+    for (const name of legacyEntries) await copyLegacyPath(`/${name}`, `/${name}`);
+    await pfs.unlink(MIGRATION_MARKER);
+    await pfs.flush();
+  } catch (error) {
+    await pfs.flush();
+    throw new Error(`Could not migrate the previous browser workspace. Its original data remains untouched; reload to retry. ${error.message}`);
+  }
+  return true;
+}
+
 async function comparePublishedSnapshot(baseUrl) {
   publishedSnapshot = null;
   const sidecarUrl = new URL('admin/snapshot.json', new URL(baseUrl, self.location.origin));
@@ -152,12 +215,21 @@ async function ensureInitialized(baseUrl) {
   if (initialized) return initialized;
   initialized = (async () => {
     await fs.init(FS_NAME);
+    await recoverInterruptedMigration();
 
     let saved;
     try {
       saved = await pfs.readFile(READY_FILE, 'utf8');
     } catch (error) {
       if (error.code !== 'ENOENT') throw error;
+    }
+    if (saved === undefined) {
+      await migrateLegacyWorkspace();
+      try {
+        saved = await pfs.readFile(READY_FILE, 'utf8');
+      } catch (error) {
+        if (error.code !== 'ENOENT') throw error;
+      }
     }
     if (saved !== undefined) {
       snapshot = JSON.parse(saved);

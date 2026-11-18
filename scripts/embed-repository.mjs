@@ -98,9 +98,9 @@ async function main() {
     }
   }
 
-  if (process.env.ASTROCMS_ALLOW_DIRTY_SNAPSHOT !== '1' && !process.argv.includes('--allow-dirty')) {
+  if (process.env.ASTRAEUSCMS_ALLOW_DIRTY_SNAPSHOT !== '1' && !process.argv.includes('--allow-dirty')) {
     const status = git(['status', '--porcelain=v1', '--untracked-files=all']);
-    if (status) fail(`source tree is not clean. Commit or stash changes before building. Set ASTROCMS_ALLOW_DIRTY_SNAPSHOT=1 only for local development to bypass this check.\n${status}`);
+    if (status) fail(`source tree is not clean. Commit or stash changes before building. Set ASTRAEUSCMS_ALLOW_DIRTY_SNAPSHOT=1 only for local development to bypass this check.\n${status}`);
   }
 
   await fs.mkdir(path.dirname(archivePath), { recursive: true });
