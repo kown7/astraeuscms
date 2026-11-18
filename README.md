@@ -33,4 +33,4 @@ Snapshot ZIP encryption is not implemented yet. The intended build behavior is:
 - If set, it must contain a 32-byte AES key encoded as 64 hexadecimal characters. The build will use AES-256-GCM to encrypt the ZIP.
 - Store the key as a GitHub Actions secret and pass it only to the snapshot-packaging step. Never inject it into Astro/Vite client code or the generated site.
 - Users of an encrypted admin will need the key out of band; the browser can prompt for it and keep it in memory. The public `snapshot.json` metadata remains visible either way.
-- The public `archiveEncryption` field drives the sidebar lock icon (`🔓` for `none`, `🔒` for `aes-256-gcm`) and does not reveal the key.
+- The public `archiveEncryption` field drives the sidebar status icon (`📄` for `none`, `🔑` for `aes-256-gcm`) and does not reveal the key.

@@ -560,7 +560,7 @@ function renderMetadata() {
   if (encryptionIcon) {
     const encrypted = repository.archiveEncryption === 'aes-256-gcm';
     const label = encrypted ? 'Snapshot ZIP is encrypted' : 'Snapshot ZIP is not encrypted';
-    encryptionIcon.textContent = encrypted ? '🔒' : '🔓';
+    encryptionIcon.textContent = encrypted ? '🔑' : '📄';
     encryptionIcon.title = label;
     encryptionIcon.setAttribute('aria-label', label);
   }
