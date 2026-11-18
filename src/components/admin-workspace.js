@@ -556,6 +556,14 @@ function renderMetadata() {
   const shortBase = baseSha ? baseSha.slice(0, 12) : '—';
   setText('[data-sidebar-branch]', branch || 'Detached HEAD');
   setText('[data-sidebar-sha]', shortBase);
+  const encryptionIcon = document.querySelector('[data-snapshot-encryption]');
+  if (encryptionIcon) {
+    const encrypted = repository.archiveEncryption === 'aes-256-gcm';
+    const label = encrypted ? 'Snapshot ZIP is encrypted' : 'Snapshot ZIP is not encrypted';
+    encryptionIcon.textContent = encrypted ? '🔒' : '🔓';
+    encryptionIcon.title = label;
+    encryptionIcon.setAttribute('aria-label', label);
+  }
   setText('[data-overview-branch]', branch || 'Detached HEAD');
   setText('[data-overview-base]', shortBase);
   setText('[data-overview-built]', builtAt ? new Date(builtAt).toLocaleString() : '—');

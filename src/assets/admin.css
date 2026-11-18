@@ -60,6 +60,7 @@ button:disabled { opacity: .5; cursor: not-allowed; }
 .snapshot-card > strong { color: #f0f1f5; font-size: 10px; font-weight: 600; }
 .snapshot-sha { margin-top: 8px; color: #9ba3b2; font-size: 8px; }
 .snapshot-sha code { margin-left: 4px; color: #d7d2ff; font: 8px ui-monospace, SFMono-Regular, Menlo, monospace; }
+.snapshot-encryption { margin-right: 4px; font-size: 11px; vertical-align: -1px; cursor: help; }
 .snapshot-note { margin-top: 8px; color: #9299a8; font-size: 8px; }
 .profile-row { display: flex; align-items: center; gap: 8px; padding: 13px 3px 2px; }
 .profile-avatar { width: 27px; height: 27px; display: grid; place-items: center; border-radius: 50%; color: #fff; background: #a76e63; font-size: 8px; font-weight: 700; }

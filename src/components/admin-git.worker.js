@@ -61,7 +61,11 @@ function validateSnapshotMetadata(metadata, label) {
   if (typeof metadata.baseSha !== 'string' || !/^[0-9a-f]{40}$/i.test(metadata.baseSha) || typeof metadata.branch !== 'string' || !metadata.branch) {
     throw new Error(`The ${label} snapshot metadata is missing its branch or a valid base commit.`);
   }
-  return metadata;
+  const archiveEncryption = metadata.archiveEncryption ?? 'none';
+  if (!['none', 'aes-256-gcm'].includes(archiveEncryption)) {
+    throw new Error(`The ${label} snapshot metadata has an unsupported archive encryption mode.`);
+  }
+  return { ...metadata, archiveEncryption };
 }
 
 async function fetchPublishedSnapshot(baseUrl) {
@@ -93,7 +97,7 @@ async function fetchPublishedArchive(baseUrl) {
     throw new Error('The repository ZIP snapshot metadata is invalid.');
   }
   const metadata = validateSnapshotMetadata(parsedMetadata, 'repository ZIP');
-  if (metadata.baseSha !== published.baseSha || metadata.branch !== published.branch) {
+  if (metadata.baseSha !== published.baseSha || metadata.branch !== published.branch || metadata.archiveEncryption !== published.archiveEncryption) {
     throw new Error('The repository ZIP does not match the current published snapshot metadata. Retry after the deployment finishes.');
   }
   return { published, archive, metadata };
@@ -263,7 +267,7 @@ async function ensureInitialized(baseUrl) {
     const metadataBytes = archive['snapshot.json'];
     if (!metadataBytes) throw new Error('The repository archive is missing snapshot.json.');
     const metadata = validateSnapshotMetadata(JSON.parse(new TextDecoder().decode(metadataBytes)), 'repository archive');
-    if (publishedSnapshot && (metadata.baseSha !== publishedSnapshot.baseSha || metadata.branch !== publishedSnapshot.branch)) {
+    if (publishedSnapshot && (metadata.baseSha !== publishedSnapshot.baseSha || metadata.branch !== publishedSnapshot.branch || metadata.archiveEncryption !== publishedSnapshot.archiveEncryption)) {
       throw new Error('The repository ZIP does not match the published snapshot metadata. Reload and try again.');
     }
     await materializeSnapshot(REPO_DIR, archive, metadata);
@@ -273,6 +277,7 @@ async function ensureInitialized(baseUrl) {
       baseSha: metadata.baseSha,
       branch: metadata.branch,
       builtAt: metadata.builtAt,
+      archiveEncryption: metadata.archiveEncryption,
     };
     await mkdirp(WORKSPACE_DIR);
     await pfs.writeFile(READY_FILE, JSON.stringify(snapshot), 'utf8');
@@ -430,6 +435,7 @@ async function metadata() {
     upstreamSha: upstreamSnapshot.baseSha,
     upstreamBranch: upstreamSnapshot.branch,
     upstreamBuiltAt: upstreamSnapshot.builtAt,
+    archiveEncryption: upstreamSnapshot.archiveEncryption || 'none',
     staleBase: Boolean(isStale),
     githubTarget: parseGitHubOrigin(origin),
   };
@@ -810,6 +816,7 @@ async function resetPublishedSnapshot(payload) {
       baseSha: metadata.baseSha,
       branch: metadata.branch,
       builtAt: metadata.builtAt,
+      archiveEncryption: metadata.archiveEncryption || 'none',
     };
     await mkdirp(WORKSPACE_DIR);
     await pfs.writeFile(READY_FILE, JSON.stringify(nextSnapshot), 'utf8');

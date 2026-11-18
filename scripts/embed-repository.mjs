@@ -111,6 +111,7 @@ async function main() {
     baseSha,
     branch,
     builtAt: new Date().toISOString(),
+    archiveEncryption: 'none',
   };
   const metadataBytes = new TextEncoder().encode(JSON.stringify(metadata, null, 2));
   const files = await collectGitFiles(gitDir);
