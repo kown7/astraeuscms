@@ -27,6 +27,14 @@ After editing, use **Push to GitHub** with a fine-grained PAT that has repositor
 
 `ASTRAEUSCMS_SNAPSHOT_KEY_HEX` is optional. When unset or empty, builds publish a plaintext `base-git.zip`; when set, it must be a 32-byte AES key encoded as exactly 64 hexadecimal characters, and the build encrypts the ZIP with AES-256-GCM. The GitHub Actions workflow reads this value from the repository Actions secret of the same name; if that secret is absent, deployment remains plaintext. Local encrypted builds use the same environment variable.
 
+Generate a key once with:
+
+```sh
+openssl rand -hex 32
+```
+
+The output is exactly 64 hexadecimal characters (32 bytes). Example format only—do not use this as a real key: `0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef`. Save the generated key in a password manager and as the GitHub Actions secret `ASTRAEUSCMS_SNAPSHOT_KEY_HEX`; reuse that same key for later builds so existing encrypted snapshots remain unlockable. For local builds, export the saved value as `ASTRAEUSCMS_SNAPSHOT_KEY_HEX` before running `npm run build` or `npm run dev`.
+
 Users opening or resetting to an encrypted snapshot must enter the key out of band. The browser uses it only to decrypt the ZIP and does not store it. A wrong key leaves the current workspace unchanged. This protects only the published base ZIP: it does not encrypt browser-local repository data or exported ZIPs, and it cannot hide a publicly readable GitHub repository.
 
 The sidebar uses 📄 for `none` and 🔑 for `aes-256-gcm`. A missing key selects plaintext mode.
