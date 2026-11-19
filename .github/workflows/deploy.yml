@@ -35,7 +35,7 @@ jobs:
       - name: Build Astro site
         run: npm run build
         env:
-          ASTRO_BASE: /astraeuscms
+          # ASTRO_BASE: /astraeuscms
           ASTRAEUSCMS_SNAPSHOT_KEY_HEX: ${{ secrets.ASTRAEUSCMS_SNAPSHOT_KEY_HEX }}
 
       - name: Configure GitHub Pages
