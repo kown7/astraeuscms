@@ -14,16 +14,14 @@ const { page } = Astro.props;
 const { Content } = await render(page);
 ---
 <Layout title={`${page.data.title} | A Small Site`}>
-	<main>
-		<article>
-			<h1>{page.data.title}</h1>
-			{page.data.description && <p class="description">{page.data.description}</p>}
-			<div class="content"><Content /></div>
-		</article>
-	</main>
+  <main class="site-page-main">
+    <article class="site-article">
+      <header class="site-article-header">
+        <p class="site-eyebrow">A SMALL SITE · ABOUT</p>
+        <h1>{page.data.title}</h1>
+        {page.data.description && <p class="site-article-description">{page.data.description}</p>}
+      </header>
+      <div class="site-article-content"><Content /></div>
+    </article>
+  </main>
 </Layout>
-<style>
-	main { max-width: 46rem; margin: 0 auto; padding: 3rem 1.5rem; color: #172033; font-family: system-ui, sans-serif; line-height: 1.7; }
-	h1 { line-height: 1.1; font-size: clamp(2.4rem, 7vw, 4rem); }
-	.description { color: #64748b; }
-</style>

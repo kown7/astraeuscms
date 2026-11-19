@@ -1,10 +1,11 @@
 ---
 import SiteHeader from '../components/SiteHeader.astro';
+import '../assets/site.css';
 const { title = 'A Small Site', showSiteHeader = true } = Astro.props;
 const baseUrl = import.meta.env.BASE_URL.endsWith('/') ? import.meta.env.BASE_URL : `${import.meta.env.BASE_URL}/`;
 ---
 <!doctype html>
-<html lang="en">
+<html lang="en" data-public-site={showSiteHeader ? 'true' : 'false'}>
 	<head>
 		<meta charset="utf-8" />
 		<meta name="viewport" content="width=device-width" />
@@ -12,10 +13,45 @@ const baseUrl = import.meta.env.BASE_URL.endsWith('/') ? import.meta.env.BASE_UR
 		<link rel="icon" href={`${baseUrl}favicon.ico`} />
 		<meta name="generator" content={Astro.generator} />
 		<title>{title}</title>
+		<script is:inline>
+			if (document.documentElement.dataset.publicSite === 'true') {
+				try {
+					const savedTheme = localStorage.getItem('astraeuscms-public-theme');
+					const theme = savedTheme === 'light' || savedTheme === 'dark'
+						? savedTheme
+						: (matchMedia('(prefers-color-scheme: dark)').matches ? 'dark' : 'light');
+					document.documentElement.dataset.theme = theme;
+				} catch {
+					document.documentElement.dataset.theme = 'light';
+				}
+			}
+		</script>
 	</head>
-	<body>
+	<body class={showSiteHeader ? 'public-site' : 'admin-site'}>
 		{showSiteHeader && <SiteHeader />}
 		<slot />
+		{showSiteHeader && <footer class="site-footer"><span>A small site for notes and ideas.</span><a href="https://astro.build/" target="_blank" rel="noreferrer">Made with Astro</a></footer>}
+		<script>
+			const themeButton = document.querySelector('[data-theme-toggle]');
+			if (themeButton instanceof HTMLButtonElement) {
+				const themeIcon = themeButton.querySelector('[data-theme-icon]');
+				const updateThemeButton = () => {
+					const isDark = document.documentElement.dataset.theme === 'dark';
+					const label = isDark ? 'Switch to light theme' : 'Switch to dark theme';
+					if (themeIcon) themeIcon.textContent = isDark ? '☀' : '☾';
+					themeButton.setAttribute('aria-label', label);
+					themeButton.title = label;
+					themeButton.setAttribute('aria-pressed', String(isDark));
+				};
+				updateThemeButton();
+				themeButton.addEventListener('click', () => {
+					const theme = document.documentElement.dataset.theme === 'dark' ? 'light' : 'dark';
+					document.documentElement.dataset.theme = theme;
+					try { localStorage.setItem('astraeuscms-public-theme', theme); } catch {}
+					updateThemeButton();
+				});
+			}
+		</script>
 	</body>
 </html>
 
@@ -24,6 +60,6 @@ const baseUrl = import.meta.env.BASE_URL.endsWith('/') ? import.meta.env.BASE_UR
 	body {
 		margin: 0;
 		width: 100%;
-		height: 100%;
+		min-height: 100%;
 	}
 </style>
