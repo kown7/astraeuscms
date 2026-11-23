@@ -20,7 +20,7 @@ const baseUrl = import.meta.env.BASE_URL.endsWith('/') ? import.meta.env.BASE_UR
 	</aside>
 
 	<main class="main-panel">
-		<header class="topbar"><div class="crumbs"><span>Astro site</span><span class="crumb-divider">/</span><strong data-breadcrumb>Overview</strong></div><div class="topbar-actions"><span class="local-badge"><i></i>Local repository</span><button class="button button-secondary" type="button" data-action="reset-published" title="Replace this browser workspace with the current deployment snapshot">Reset to snapshot</button><button class="button button-secondary" type="button" data-action="github-push" data-github-push-action hidden>Push to GitHub</button><button class="button button-primary" type="button" data-action="download"><svg viewBox="0 0 20 20" aria-hidden="true"><path d="M10 3v9m0 0 3-3m-3 3L7 9M4 14v3h12v-3"/></svg>Export repository</button></div></header>
+		<header class="topbar"><div class="crumbs"><span>Astro site</span><span class="crumb-divider">/</span><strong data-breadcrumb>Overview</strong></div><div class="topbar-actions"><span class="local-badge"><i></i>Local repository</span><button class="button button-secondary" type="button" data-action="reset-published" title="Replace this browser workspace with the current deployment snapshot">Reset to snapshot</button><button class="button button-secondary" type="button" data-action="github-push" data-github-push-action hidden>Push to GitHub</button><button class="button button-secondary" type="button" data-action="preview-site" title="Build and preview the current browser worktree without pushing"><svg viewBox="0 0 20 20" aria-hidden="true"><path d="M2.5 10s2.7-5 7.5-5 7.5 5 7.5 5-2.7 5-7.5 5-7.5-5-7.5-5Z"/><circle cx="10" cy="10" r="2"/></svg>Preview</button><button class="button button-primary" type="button" data-action="download"><svg viewBox="0 0 20 20" aria-hidden="true"><path d="M10 3v9m0 0 3-3m-3 3L7 9M4 14v3h12v-3"/></svg>Export repository</button></div></header>
 		<div class="local-git-banner" role="status"><span class="status-pill">LOCAL GIT</span><span>Edits stay in this browser workspace. GitHub is contacted only when you explicitly push.</span><button type="button" data-action="flow-help">How publishing works <span>→</span></button></div>
 		<div class="stale-base-banner" data-stale-warning role="alert" hidden><span>The deployed snapshot differs from this browser workspace. Reset replaces local edits, files, and commits with the snapshot in the current deployment.</span><button class="button button-secondary" type="button" data-action="reset-published">Reset to snapshot</button></div>
 		<div class="page-body">
@@ -111,6 +111,17 @@ const baseUrl = import.meta.env.BASE_URL.endsWith('/') ? import.meta.env.BASE_UR
 
 <dialog class="modal" data-dialog="new-file"><form class="modal-card" data-new-file-form><button class="modal-close" type="button" aria-label="Close dialog" data-close>×</button><span class="modal-icon new-file-icon"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 4v16M4 12h16"/></svg></span><p class="eyebrow">NEW TEXT FILE</p><h2>Create a repository file</h2><p class="modal-copy">Choose a path relative to the repository root. Parent folders are created as needed.</p><label for="new-file-path">Repository path</label><input id="new-file-path" name="path" required placeholder="src/content/blog/new-post.md" /><label for="new-file-content">Initial text</label><textarea id="new-file-content" name="content" rows="7" placeholder="Start writing…"></textarea><button class="button button-primary modal-button" type="submit">Create file</button></form></dialog>
 
+<dialog class="modal preview-modal" data-dialog="local-preview" aria-labelledby="local-preview-title">
+	<div class="modal-card">
+		<button class="modal-close" type="button" aria-label="Close preview" data-close>×</button>
+		<p class="eyebrow">LOCAL ASTRO PREVIEW</p>
+		<h2 id="local-preview-title">Build the current worktree in your browser</h2>
+		<p class="modal-copy">The preview receives no CMS or GitHub credentials. `.git`, `.env` files, `.npmrc`, and common key files are omitted. Repository install/build scripts run in this browser and may make network requests; preview only repositories you trust. Nothing is pushed.</p>
+		<div class="preview-toolbar"><p data-preview-status role="status" aria-live="polite">Preparing preview…</p><button class="button button-secondary" type="button" data-preview-rebuild disabled>Build / rebuild</button></div>
+		<iframe class="preview-iframe" data-preview-frame title="Local Astro site preview" referrerpolicy="no-referrer" hidden></iframe>
+		<pre class="preview-output" data-preview-output aria-label="Preview build output" hidden></pre>
+	</div>
+</dialog>
 <div class="toast" role="status" aria-live="polite" data-toast hidden></div>
 
 <script>

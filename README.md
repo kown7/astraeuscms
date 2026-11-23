@@ -19,6 +19,14 @@ Open `http://localhost:4321/admin/`.
 
 `npm run build` writes the static site to the Git-ignored `dist/` folder. GitHub Actions builds with `ASTRO_BASE=/astraeuscms` and deploys `dist/` to Pages on pushes to `main`; set the repository’s Pages source to **GitHub Actions**. The build requires a normal, non-bare Git working copy with full history and a named branch.
 
+## Browser-based site preview
+
+Use **Preview** in the admin bar to build the current browser worktree with WebContainers and open the result in an embedded local preview. The production build registers a scoped COOP/COEP service worker; the first admin visit may reload once while it takes control. Preview requires a secure context and a browser supported by WebContainers. `astro dev` does not enable the isolated preview runtime; use the production build and `astro preview` to test it locally.
+
+Preview mounts a filtered copy: `.git`, `.ssh`, `.aws`, `.env` files (except sample templates), `.npmrc`, `.netrc`, Git credential files, common private-key files, and generated output are excluded. Because `.git` is omitted, build steps that require Git metadata should skip that work when `ASTRAEUSCMS_PREVIEW_BUILD=1`. Preview does not push or pass CMS/GitHub credentials to the build. Dependency installation and repository build scripts execute in the browser and may make network requests, so preview only repositories you trust; secrets committed under other filenames may still be accessible to those scripts. WebContainers have separate licensing terms for commercial use; confirm those terms before a commercial deployment.
+
+## Publish changes
+
 After editing, use **Push to GitHub** with a fine-grained PAT that has repository `Contents: write`. **Reset to snapshot** replaces this browser’s local edits and commits with the ZIP in the current deployment; export the repository first if you need to keep that work. Reset does not fetch GitHub—the deployment snapshot changes only after a new build and deployment. Alternatively, download the repository ZIP and use `git status`, `git log`, and `git push origin <branch>` from your console.
 
 ## Snapshot metadata and optional encryption

@@ -50,6 +50,7 @@ async function collectGitFiles(directory, relative = '') {
 }
 
 async function main() {
+  if (process.env.ASTRAEUSCMS_PREVIEW_BUILD === '1') return;
   let stat;
   try {
     stat = await fs.stat(gitDir);

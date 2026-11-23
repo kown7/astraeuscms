@@ -1,6 +1,7 @@
 import git from 'isomorphic-git';
 import LightningFS from '@isomorphic-git/lightning-fs';
 import { unzipSync, zipSync } from 'fflate';
+import { isExcludedPreviewPath, isSafePreviewSymlink } from './preview-paths.js';
 import { Buffer } from 'buffer';
 globalThis.Buffer = Buffer;
 
@@ -930,6 +931,29 @@ async function resetPublishedSnapshot(payload) {
   }
 }
 
+
+async function exportPreviewFiles() {
+  const files = Object.create(null);
+  async function visit(directory) {
+    for (const name of await pfs.readdir(directory)) {
+      const fullPath = `${directory}/${name}`;
+      const relative = fullPath.slice(REPO_DIR.length + 1);
+      if (isExcludedPreviewPath(relative)) continue;
+      const stat = await pfs.lstat(fullPath);
+      if (stat.isDirectory()) {
+        await visit(fullPath);
+      } else if (stat.isSymbolicLink()) {
+        const target = await pfs.readlink(fullPath);
+        if (isSafePreviewSymlink(relative, target)) Object.defineProperty(files, relative, { value: { symlink: target }, enumerable: true });
+      } else if (stat.isFile()) {
+        Object.defineProperty(files, relative, { value: await pfs.readFile(fullPath), enumerable: true });
+      }
+    }
+  }
+  await visit(REPO_DIR);
+  return files;
+}
+
 async function exportRepository() {
   const zipEntries = {};
   async function visit(directory) {
@@ -973,6 +997,7 @@ async function handle(type, payload) {
     case 'commit': return commit(payload);
     case 'github-push': return githubPush(payload);
     case 'reset-published': return resetPublishedSnapshot(payload);
+    case 'preview-files': return exportPreviewFiles();
     case 'export': return exportRepository();
     default: throw new Error(`Unknown repository operation: ${type}`);
   }

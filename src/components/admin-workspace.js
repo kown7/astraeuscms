@@ -9,7 +9,9 @@ const markdownMount = document.querySelector('[data-markdown-editor]');
 const markdownToggle = document.querySelector('[data-action="toggle-markdown-mode"]');
 const markdownFrontmatterNote = document.querySelector('[data-markdown-frontmatter-note]');
 const toast = document.querySelector('[data-toast]');
-const worker = new Worker(new URL('./admin-git.worker.js', import.meta.url), { type: 'module' });
+const worker = import.meta.env.DEV
+  ? new Worker(new URL('./admin-git.worker.js', import.meta.url), { type: 'module' })
+  : new Worker(new URL('./admin-git.worker.js', import.meta.url));
 const pending = new Map();
 const BASE_URL = import.meta.env.BASE_URL.endsWith('/') ? import.meta.env.BASE_URL : `${import.meta.env.BASE_URL}/`;
 const COMMIT_AUTHOR_COOKIE = 'astraeuscms_commit_author';
@@ -857,11 +859,22 @@ document.querySelector('#published-reset-confirmation')?.addEventListener('chang
   }
 });
 
+async function openLocalSitePreview() {
+  syncMarkdownEditorToSource();
+  if (editor && selectedPath && isTextFile && editor.value !== editorBaselineText) {
+    if (!window.confirm('Save unsaved editor changes to the local worktree before previewing?')) return;
+    await saveSelected();
+  }
+  const { startLocalPreview } = await import('./astro-preview.js');
+  await startLocalPreview(() => callWorker('preview-files'));
+}
+
 function handleAction(action) {
   switch (action) {
     case 'save': void saveSelected().catch((error) => showToast(`Save failed: ${error.message}`)); break;
     case 'commit': openDialog('commit'); break;
     case 'download': openDialog('download'); break;
+    case 'preview-site': void openLocalSitePreview().catch((error) => showToast(`Preview failed: ${error.message}`)); break;
     case 'export': void exportRepository(); break;
     case 'new-file':
       if (document.querySelector('[data-new-file-form]')) {
