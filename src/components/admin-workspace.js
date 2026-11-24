@@ -742,6 +742,11 @@ async function refreshRepository(initial = false, encryptionKeyHex = '') {
   renderCommits();
   updateEditorState();
   setText('[data-repository-state]', `${files.length} files ready in this browser`);
+  const initializationError = document.querySelector('[data-repository-init-error]');
+  if (initializationError) {
+    initializationError.textContent = '';
+    initializationError.hidden = true;
+  }
 }
 
 function categoryFolder() {
@@ -1352,9 +1357,15 @@ async function initializeEditor() {
       openSnapshotKeyDialog();
       return;
     }
+    const message = error instanceof Error ? error.message : String(error);
     setText('[data-repository-state]', 'Repository initialization failed');
     setText('[data-sidebar-state]', 'Initialization failed');
-    showToast(`Could not open repository: ${error.message}`);
+    const initializationError = document.querySelector('[data-repository-init-error]');
+    if (initializationError) {
+      initializationError.textContent = `Could not open repository: ${message}`;
+      initializationError.hidden = false;
+    }
+    showToast(`Could not open repository: ${message}`);
   }
 }
 

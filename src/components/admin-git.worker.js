@@ -11,6 +11,7 @@ const MIGRATION_MARKER = '/.astraeuscms-legacy-migration';
 const REPO_DIR = '/repo';
 const WORKSPACE_DIR = '/workspace-meta';
 const READY_FILE = `${WORKSPACE_DIR}/initialized.json`;
+const INITIALIZATION_FILE = `${WORKSPACE_DIR}/initializing.json`;
 const RESET_STAGING_DIR = '/repo-reset-staging';
 const RESET_BACKUP_DIR = '/repo-reset-backup';
 const fs = new LightningFS();
@@ -236,6 +237,23 @@ async function recoverInterruptedMigration() {
   await pfs.flush();
 }
 
+async function recoverInterruptedInitialization() {
+  let marker;
+  try { marker = await pfs.readFile(INITIALIZATION_FILE, 'utf8'); } catch (error) {
+    if (error.code === 'ENOENT') return;
+    throw error;
+  }
+  if (marker === undefined) return;
+
+  let ready;
+  try { ready = await pfs.readFile(READY_FILE, 'utf8'); } catch (error) {
+    if (error.code !== 'ENOENT') throw error;
+  }
+  if (ready === undefined) await removeTree(REPO_DIR);
+  await pfs.unlink(INITIALIZATION_FILE);
+  await pfs.flush();
+}
+
 async function migrateLegacyWorkspace() {
   await legacyFs.init(LEGACY_FS_NAME);
   const legacyEntries = await legacyPfs.readdir('/');
@@ -284,6 +302,7 @@ async function ensureInitialized(baseUrl, encryptionKeyHex = '') {
   initialized = (async () => {
     await fs.init(FS_NAME);
     await recoverInterruptedMigration();
+    await recoverInterruptedInitialization();
 
     let saved;
     try {
@@ -318,7 +337,7 @@ async function ensureInitialized(baseUrl, encryptionKeyHex = '') {
       if (error.code !== 'ENOENT') throw error;
     }
     if (existingRepoEntries.length) {
-      throw new Error('Repository data exists without its initialization marker. Refusing to overwrite it; export the repository or clear this browser workspace manually.');
+      throw new Error('Repository data exists without its initialization marker. An initial load may have been interrupted; use Reset to snapshot to replace this browser workspace, which discards local changes.');
     }
 
     const archiveUrl = new URL('admin/base-git.zip', new URL(baseUrl, self.location.origin));
@@ -340,6 +359,9 @@ async function ensureInitialized(baseUrl, encryptionKeyHex = '') {
       || metadata.archiveEncryption !== publishedSnapshot.archiveEncryption || metadata.archiveIv !== publishedSnapshot.archiveIv)) {
       throw new Error('The repository ZIP does not match the published snapshot metadata. Reload and try again.');
     }
+    await mkdirp(WORKSPACE_DIR);
+    await pfs.writeFile(INITIALIZATION_FILE, 'in-progress', 'utf8');
+    await pfs.flush();
     await materializeSnapshot(REPO_DIR, archive, metadata);
     await pfs.flush();
     snapshot = {
@@ -349,8 +371,9 @@ async function ensureInitialized(baseUrl, encryptionKeyHex = '') {
       builtAt: metadata.builtAt,
       archiveEncryption: metadata.archiveEncryption,
     };
-    await mkdirp(WORKSPACE_DIR);
     await pfs.writeFile(READY_FILE, JSON.stringify(snapshot), 'utf8');
+    await pfs.flush();
+    await pfs.unlink(INITIALIZATION_FILE);
     await pfs.flush();
     await comparePublishedSnapshot(baseUrl);
   })().catch((error) => {
@@ -890,6 +913,8 @@ async function resetPublishedSnapshot(payload) {
     };
     await mkdirp(WORKSPACE_DIR);
     await pfs.writeFile(READY_FILE, JSON.stringify(nextSnapshot), 'utf8');
+    await pfs.flush();
+    if (await pathExists(INITIALIZATION_FILE)) await pfs.unlink(INITIALIZATION_FILE);
     await pfs.flush();
     snapshot = nextSnapshot;
     publishedSnapshot = published;
