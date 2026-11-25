@@ -6,6 +6,7 @@ import cloudflare from '@astrojs/cloudflare';
 // https://astro.build/config
 export default defineConfig({
   base: process.env.ASTRO_BASE ?? '/',
+  session: false,
 
   vite: {
       define: {
@@ -18,5 +19,5 @@ export default defineConfig({
       },
 	},
 
-  adapter: cloudflare( { session: false } ),
+  adapter: cloudflare(),
 });
