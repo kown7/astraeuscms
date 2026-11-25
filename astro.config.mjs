@@ -18,5 +18,5 @@ export default defineConfig({
       },
 	},
 
-  adapter: cloudflare(),
+  adapter: cloudflare( { session: false } ),
 });
