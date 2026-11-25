@@ -11,9 +11,10 @@
     "predev": "node scripts/embed-repository.mjs --allow-dirty",
     "build": "astro build",
     "prebuild": "node scripts/embed-repository.mjs",
-    "preview": "astro preview",
+    "preview": "npm run build && wrangler dev",
     "astro": "astro",
-    "generate-types": "wrangler types"
+    "generate-types": "wrangler types",
+    "deploy": "npm run build && wrangler deploy"
   },
   "dependencies": {
     "@astrojs/cloudflare": "^14.4.9",
