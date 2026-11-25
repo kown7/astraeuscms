@@ -28,3 +28,10 @@ public/admin/base-git.zip
 public/admin/snapshot.json
 
 .wrangler
+public/.assetsignore
+wrangler.jsonc
+
+.dev.vars*
+!.dev.vars.example
+!.env.example
+
